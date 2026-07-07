@@ -1,0 +1,6 @@
+{
+  "name": "2D Basketball Game",
+  "description": "An interactive 2D basketball physics game where players drag and release the ball to shoot, featuring local multiplayer, CPU opponents, and a retro background music synthesizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
