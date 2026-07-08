@@ -18,7 +18,13 @@ import {
   ChevronDown,
   Sparkles,
   Lock,
-  Sliders
+  Sliders,
+  ShoppingBag,
+  Coins,
+  Save,
+  Check,
+  Trophy,
+  Shield
 } from 'lucide-react';
 import { GameMode, AudioSettings, GameScoreState } from '../types';
 import { gameAudio } from '../lib/audio';
@@ -32,8 +38,26 @@ interface SettingsHeaderProps {
   resetGame: () => void;
   hummanEnabled: boolean;
   setHummanEnabled: (enabled: boolean) => void;
+  shotBlockingEnabled: boolean;
+  setShotBlockingEnabled: (enabled: boolean) => void;
   ballRadius: number;
   setBallRadius: (radius: number) => void;
+  money: number;
+  setMoney: React.Dispatch<React.SetStateAction<number>>;
+  unlockedItems: string[];
+  setUnlockedItems: React.Dispatch<React.SetStateAction<string[]>>;
+  activeTrail: string;
+  setActiveTrail: (val: string) => void;
+  activeHat: string;
+  setActiveHat: (val: string) => void;
+  activeWeight: string;
+  setActiveWeight: (val: string) => void;
+  activeBounce: string;
+  setActiveBounce: (val: string) => void;
+  restockTime: number;
+  shopStock: Record<string, number>;
+  setShopStock: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+  onOpenShop: () => void;
 }
 
 export default function SettingsHeader({
@@ -45,12 +69,47 @@ export default function SettingsHeader({
   resetGame,
   hummanEnabled,
   setHummanEnabled,
+  shotBlockingEnabled,
+  setShotBlockingEnabled,
   ballRadius,
   setBallRadius,
+  money,
+  setMoney,
+  unlockedItems,
+  setUnlockedItems,
+  activeTrail,
+  setActiveTrail,
+  activeHat,
+  setActiveHat,
+  activeWeight,
+  setActiveWeight,
+  activeBounce,
+  setActiveBounce,
+  restockTime,
+  shopStock,
+  setShopStock,
+  onOpenShop,
 }: SettingsHeaderProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [uploadedSong, setUploadedSong] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isSaveFlash, setIsSaveFlash] = useState(false);
+
+  const handleManualSave = () => {
+    localStorage.setItem('ragdoll_basketball_money', money.toString());
+    localStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
+    localStorage.setItem('ragdoll_basketball_trail', activeTrail);
+    localStorage.setItem('ragdoll_basketball_hat', activeHat);
+    localStorage.setItem('ragdoll_basketball_weight', activeWeight);
+    localStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+    
+    try { gameAudio.playChimeSound(); } catch (e) {}
+
+    setIsSaveFlash(true);
+    setTimeout(() => {
+      setIsSaveFlash(false);
+    }, 2500);
+  };
 
   const toggleMusic = () => {
     const updated = { ...audioSettings, musicEnabled: !audioSettings.musicEnabled };
@@ -191,6 +250,20 @@ export default function SettingsHeader({
             <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
           </button>
 
+          {/* Dedicated prominent Locker Room Shop button */}
+          <button 
+            id="header-open-shop-btn"
+            onClick={onOpenShop}
+            className="px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-extrabold border bg-gradient-to-r from-amber-500/15 to-orange-500/15 border-amber-500/45 hover:border-amber-400 text-amber-400 hover:text-amber-300 shadow-md shadow-amber-500/5 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            title="Locker Room Shop"
+          >
+            <ShoppingBag className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
+            <span className="hidden xs:inline">Shop</span>
+            <span className="bg-amber-400 text-slate-950 font-mono text-[10px] font-black px-1.5 py-0.5 rounded-full">
+              ${money}
+            </span>
+          </button>
+
           {/* Quick Mute Toggle for Instant Audio Control */}
           <button
             id="quick-mute-btn"
@@ -234,9 +307,9 @@ export default function SettingsHeader({
 
       {/* Expanded Options Drawer/Panel */}
       {isOpen && (
-        <div className="mt-2 p-5 bg-slate-900/95 border border-slate-700/60 rounded-2xl shadow-2xl backdrop-blur-md grid grid-cols-1 md:grid-cols-2 gap-6 transition-all duration-300 animate-fadeIn" id="options-panel">
+        <div className="mt-2 p-5 bg-slate-900/95 border border-slate-700/60 rounded-2xl shadow-2xl backdrop-blur-md grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-all duration-300 animate-fadeIn" id="options-panel">
           
-          {/* Column 1: Game Modes ("Humman options") */}
+          {/* Column 1: Game Modes (UNLOCKED!) */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 border-b border-slate-800 pb-2">
               <User className="w-3.5 h-3.5 text-orange-500" />
@@ -247,56 +320,66 @@ export default function SettingsHeader({
               {/* Practice Mode */}
               <button
                 id="mode-practice-btn"
-                disabled
-                title="Locked in Bot Mode"
-                className="text-left p-3 rounded-xl border border-slate-800/40 bg-slate-950/20 text-slate-500 flex items-start gap-3 cursor-not-allowed opacity-50"
+                onClick={() => setMode(GameMode.PRACTICE)}
+                className={`text-left p-3 rounded-xl border flex items-start gap-3 transition-all ${
+                  mode === GameMode.PRACTICE
+                    ? 'border-orange-500/50 bg-orange-500/10 text-white shadow-lg shadow-orange-500/5'
+                    : 'bg-slate-950/20 border-slate-800/40 text-slate-400 hover:bg-slate-800 hover:border-slate-700 hover:text-white'
+                }`}
               >
-                <div className="p-1.5 rounded-lg bg-slate-800 text-slate-500">
-                  <Lock className="w-4 h-4" />
+                <div className={`p-1.5 rounded-lg ${mode === GameMode.PRACTICE ? 'bg-orange-500 text-white animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
+                  <Trophy className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm font-semibold">Single Player Practice</span>
-                    <span className="text-[9px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono uppercase">Locked</span>
+                    {mode === GameMode.PRACTICE && <span className="text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded font-mono uppercase font-bold">Active</span>}
                   </div>
-                  <span className="block text-xs text-slate-600">Locked active in bot mode as requested.</span>
+                  <span className="block text-xs text-slate-400">Perfect your shots. Level up with every 3 baskets made and unlock movement.</span>
                 </div>
               </button>
 
               {/* Pass and Play Mode */}
               <button
                 id="mode-passplay-btn"
-                disabled
-                title="Locked in Bot Mode"
-                className="text-left p-3 rounded-xl border border-slate-800/40 bg-slate-950/20 text-slate-500 flex items-start gap-3 cursor-not-allowed opacity-50"
+                onClick={() => setMode(GameMode.PASS_AND_PLAY)}
+                className={`text-left p-3 rounded-xl border flex items-start gap-3 transition-all ${
+                  mode === GameMode.PASS_AND_PLAY
+                    ? 'border-orange-500/50 bg-orange-500/10 text-white shadow-lg shadow-orange-500/5'
+                    : 'bg-slate-950/20 border-slate-800/40 text-slate-400 hover:bg-slate-800 hover:border-slate-700 hover:text-white'
+                }`}
               >
-                <div className="p-1.5 rounded-lg bg-slate-800 text-slate-500">
-                  <Lock className="w-4 h-4" />
+                <div className={`p-1.5 rounded-lg ${mode === GameMode.PASS_AND_PLAY ? 'bg-orange-500 text-white animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
+                  <Users className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-semibold">Pass & Play (Local Human 2P)</span>
-                    <span className="text-[9px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono uppercase">Locked</span>
+                    <span className="text-sm font-semibold">Pass & Play (Local 2P)</span>
+                    {mode === GameMode.PASS_AND_PLAY && <span className="text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded font-mono uppercase font-bold">Active</span>}
                   </div>
-                  <span className="block text-xs text-slate-600">Locked active in bot mode as requested.</span>
+                  <span className="block text-xs text-slate-400">Take turns shooting with a friend on the same device! Pass the controls!</span>
                 </div>
               </button>
 
               {/* VS Computer Mode */}
               <button
                 id="mode-vscpu-btn"
-                disabled
-                className="text-left p-3 rounded-xl border border-orange-500/50 bg-orange-500/10 ring-1 ring-orange-500/20 text-white flex items-start gap-3 shadow-lg shadow-orange-500/5 cursor-default"
+                onClick={() => setMode(GameMode.VS_CPU)}
+                className={`text-left p-3 rounded-xl border flex items-start gap-3 transition-all ${
+                  mode === GameMode.VS_CPU
+                    ? 'border-orange-500/50 bg-orange-500/10 text-white shadow-lg shadow-orange-500/5'
+                    : 'bg-slate-950/20 border-slate-800/40 text-slate-400 hover:bg-slate-800 hover:border-slate-700 hover:text-white'
+                }`}
               >
-                <div className="p-1.5 rounded-lg bg-orange-500 text-white animate-pulse">
+                <div className={`p-1.5 rounded-lg ${mode === GameMode.VS_CPU ? 'bg-orange-500 text-white animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
                   <Cpu className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-semibold text-orange-400">Robot Duel (Human vs CPU)</span>
-                    <span className="text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded font-mono uppercase font-black animate-pulse">Bot Mode Locked Active</span>
+                    <span className="text-sm font-semibold">Robot Duel (Human vs CPU)</span>
+                    {mode === GameMode.VS_CPU && <span className="text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded font-mono uppercase font-bold">Active</span>}
                   </div>
-                  <span className="block text-xs text-slate-300">Go head-to-head with the simulated computer bot! Shoot for your team, then watch the bot shoot back!</span>
+                  <span className="block text-xs text-slate-400">Go head-to-head with the computer bot! Take turns launching the ball.</span>
                 </div>
               </button>
             </div>
@@ -310,11 +393,11 @@ export default function SettingsHeader({
             </h3>
 
             {/* Quick Toggle Switches */}
-            <div className="flex flex-col sm:flex-row gap-3">
+            <div className="grid grid-cols-2 gap-2.5">
               <button
                 id="toggle-music-btn"
                 onClick={toggleMusic}
-                className={`flex-1 p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
+                className={`p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
                   audioSettings.musicEnabled
                     ? 'bg-slate-800 border-slate-700 text-white'
                     : 'bg-slate-950/40 border-slate-850 text-slate-500'
@@ -332,7 +415,7 @@ export default function SettingsHeader({
               <button
                 id="toggle-sfx-btn"
                 onClick={toggleSfx}
-                className={`flex-1 p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
+                className={`p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
                   audioSettings.sfxEnabled
                     ? 'bg-slate-800 border-slate-700 text-white'
                     : 'bg-slate-950/40 border-slate-850 text-slate-500'
@@ -350,7 +433,7 @@ export default function SettingsHeader({
               <button
                 id="toggle-humman-btn"
                 onClick={() => setHummanEnabled(!hummanEnabled)}
-                className={`flex-1 p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
+                className={`p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
                   hummanEnabled
                     ? 'bg-orange-500/10 border-orange-500/50 text-white'
                     : 'bg-slate-950/40 border-slate-850 text-slate-500'
@@ -362,6 +445,25 @@ export default function SettingsHeader({
                 </span>
                 <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${hummanEnabled ? 'bg-orange-500' : 'bg-slate-700'}`}>
                   <span className={`block w-3 h-3 rounded-full bg-white transition-transform ${hummanEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </span>
+              </button>
+
+              <button
+                id="toggle-blocking-btn"
+                onClick={() => setShotBlockingEnabled(!shotBlockingEnabled)}
+                className={`p-2.5 rounded-xl border flex items-center justify-between text-xs font-medium transition-all ${
+                  shotBlockingEnabled
+                    ? 'bg-orange-500/10 border-orange-500/50 text-white'
+                    : 'bg-slate-950/40 border-slate-850 text-slate-500'
+                }`}
+                title={shotBlockingEnabled ? "Disable defender blocking" : "Enable defender blocking"}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Shield className="w-4 h-4 text-orange-400" />
+                  Blocking
+                </span>
+                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${shotBlockingEnabled ? 'bg-orange-500' : 'bg-slate-700'}`}>
+                  <span className={`block w-3 h-3 rounded-full bg-white transition-transform ${shotBlockingEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
                 </span>
               </button>
             </div>
@@ -449,6 +551,63 @@ export default function SettingsHeader({
               )}
             </div>
           </div>
+
+          {/* Column 3: Pro Player Shop & Save */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                <ShoppingBag className="w-3.5 h-3.5 text-orange-500" />
+                Locker Room Shop
+              </h3>
+              {/* Money counter */}
+              <div className="flex items-center gap-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold px-2 py-0.5 rounded-full font-mono">
+                <Coins className="w-3.5 h-3.5" />
+                ${money}
+              </div>
+            </div>
+
+            {/* Shop Promo Card */}
+            <div className="bg-slate-950/40 border border-slate-800/80 rounded-2xl p-3.5 flex flex-col items-center text-center space-y-2.5">
+              <span className="text-3xl animate-bounce">👑</span>
+              <div>
+                <h4 className="text-xs font-bold text-slate-200">The Shop has Moved!</h4>
+                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                  We upgraded the shop to a standalone dedicated popup modal. Tap the glowing gold button in the main bar anytime!
+                </p>
+              </div>
+              <button
+                onClick={onOpenShop}
+                className="w-full py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] font-mono tracking-wider transition-all"
+              >
+                OPEN LOCKER ROOM SHOP
+              </button>
+            </div>
+
+            {/* Manual Save Button */}
+            <div className="pt-1">
+              <button
+                onClick={handleManualSave}
+                className={`w-full py-2 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all ${
+                  isSaveFlash
+                    ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20 animate-pulse'
+                    : 'bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-750 hover:text-white'
+                }`}
+              >
+                {isSaveFlash ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>PROGRESS SAVED!</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 text-orange-400" />
+                    <span>SAVE PROGRESS</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
         </div>
       )}
     </header>

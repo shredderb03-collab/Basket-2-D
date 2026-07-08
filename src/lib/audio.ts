@@ -166,13 +166,13 @@ class GameAudioManager {
     if (!this.ctx || !this.musicGain) return;
     const t = this.ctx.currentTime;
     
-    // Chord progression in A minor (Am - F - C - G)
+    // Chord progression: A catchy, energetic sports-funk sequence (Am - Dm7 - G7 - Cmaj7)
     // 4 beats per chord = 8 eighth-note steps per chord
     const progression = [
-      { root: 'A1', chord: ['A3', 'C4', 'E4'] },
-      { root: 'F1', chord: ['F3', 'A3', 'C4'] },
-      { root: 'C2', chord: ['C4', 'E4', 'G4'] },
-      { root: 'G1', chord: ['G3', 'B3', 'D4'] }
+      { root: 'A1', chord: ['A3', 'C4', 'E4', 'G4'] },
+      { root: 'D1', chord: ['F3', 'A3', 'C4', 'E4'] },
+      { root: 'G1', chord: ['G3', 'B3', 'D4', 'F4'] },
+      { root: 'C2', chord: ['C4', 'E4', 'G4', 'B4'] }
     ];
 
     const chordIndex = Math.floor(this.currentStep / 8) % 4;
@@ -187,75 +187,173 @@ class GameAudioManager {
       return 440 * Math.pow(2, (keyIndex - 9 + (octave - 4) * 12) / 12);
     };
 
-    // 1. Synth Bassline
+    // --- 1. SYNTH DRUMS (KICK, SNARE, HI-HAT) ---
+    // Punchy Kick Drum on steps 0, 3, and 6
+    if (stepInChord === 0 || stepInChord === 3 || stepInChord === 6) {
+      const kickOsc = this.ctx.createOscillator();
+      const kickGain = this.ctx.createGain();
+      kickOsc.type = 'sine';
+      kickOsc.frequency.setValueAtTime(160, t);
+      kickOsc.frequency.exponentialRampToValueAtTime(42, t + 0.1);
+      
+      kickGain.gain.setValueAtTime(0.35, t);
+      kickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+      
+      kickOsc.connect(kickGain);
+      kickGain.connect(this.musicGain);
+      kickOsc.start(t);
+      kickOsc.stop(t + 0.12);
+    }
+
+    // Snappy Snare Drum on steps 2 and 6
+    if (stepInChord === 2 || stepInChord === 6) {
+      const noiseBuffer = this.createNoiseBuffer();
+      if (noiseBuffer) {
+        const snareNoise = this.ctx.createBufferSource();
+        snareNoise.buffer = noiseBuffer;
+        
+        const snareFilter = this.ctx.createBiquadFilter();
+        snareFilter.type = 'bandpass';
+        snareFilter.frequency.setValueAtTime(1000, t);
+        snareFilter.Q.setValueAtTime(2.0, t);
+        
+        const noiseGain = this.ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.08, t);
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+        
+        snareNoise.connect(snareFilter);
+        snareFilter.connect(noiseGain);
+        noiseGain.connect(this.musicGain);
+        snareNoise.start(t);
+        snareNoise.stop(t + 0.14);
+      }
+      
+      const snareTone = this.ctx.createOscillator();
+      const toneGain = this.ctx.createGain();
+      snareTone.type = 'triangle';
+      snareTone.frequency.setValueAtTime(180, t);
+      snareTone.frequency.exponentialRampToValueAtTime(110, t + 0.08);
+      
+      toneGain.gain.setValueAtTime(0.12, t);
+      toneGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      
+      snareTone.connect(toneGain);
+      toneGain.connect(this.musicGain);
+      snareTone.start(t);
+      snareTone.stop(t + 0.08);
+    }
+
+    // Crisp Closed Hi-Hat on offbeats (steps 1, 3, 5, 7)
+    if (stepInChord === 1 || stepInChord === 3 || stepInChord === 5 || stepInChord === 7) {
+      const noiseBuffer = this.createNoiseBuffer();
+      if (noiseBuffer) {
+        const hatNoise = this.ctx.createBufferSource();
+        hatNoise.buffer = noiseBuffer;
+        
+        const hatFilter = this.ctx.createBiquadFilter();
+        hatFilter.type = 'highpass';
+        hatFilter.frequency.setValueAtTime(8500, t);
+        
+        const hatGain = this.ctx.createGain();
+        // Step 7 is an open hat sound (longer decay) if desired, else crisp short decay
+        const decayTime = stepInChord === 7 ? 0.12 : 0.04;
+        hatGain.gain.setValueAtTime(stepInChord === 7 ? 0.035 : 0.025, t);
+        hatGain.gain.exponentialRampToValueAtTime(0.001, t + decayTime);
+        
+        hatNoise.connect(hatFilter);
+        hatFilter.connect(hatGain);
+        hatGain.connect(this.musicGain);
+        hatNoise.start(t);
+        hatNoise.stop(t + decayTime + 0.01);
+      }
+    }
+
+    // --- 2. SYNTH BASSLINE ---
     let playBass = false;
     let bassOctaveMultiplier = 1;
-    // Cool rhythmic syncopation for the bass
-    if (stepInChord === 0 || stepInChord === 2 || stepInChord === 3 || stepInChord === 5 || stepInChord === 6) {
+    // Bouncy, syncopated street funk groove
+    if (stepInChord === 0 || stepInChord === 2 || stepInChord === 3 || stepInChord === 5 || stepInChord === 6 || stepInChord === 7) {
       playBass = true;
-      if (stepInChord === 3 || stepInChord === 6) bassOctaveMultiplier = 1.5; // octave jump
+      if (stepInChord === 3 || stepInChord === 7) bassOctaveMultiplier = 2; // high slap octave bounce!
     }
 
     if (playBass) {
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = 'triangle';
+      const bassOsc = this.ctx.createOscillator();
+      const bassGain = this.ctx.createGain();
+      // Combine triangle and sawtooth for that authentic FM-synth arcade slap-bass
+      bassOsc.type = stepInChord === 3 || stepInChord === 7 ? 'sawtooth' : 'triangle';
       
       const freq = noteToFreq(root) * bassOctaveMultiplier;
-      osc.frequency.setValueAtTime(freq, t);
+      bassOsc.frequency.setValueAtTime(freq, t);
       
-      gain.gain.setValueAtTime(0.2, t);
-      gain.gain.exponentialRampToValueAtTime(0.01, t + this.beatDuration * 0.4);
+      // Slap sound filter envelope sweep
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(800, t);
+      filter.frequency.exponentialRampToValueAtTime(150, t + this.beatDuration * 0.3);
+
+      const vol = stepInChord === 3 || stepInChord === 7 ? 0.10 : 0.18; // balance the slap volume
+      bassGain.gain.setValueAtTime(vol, t);
+      bassGain.gain.exponentialRampToValueAtTime(0.001, t + this.beatDuration * 0.35);
       
-      osc.connect(gain);
-      gain.connect(this.musicGain);
-      osc.start(t);
-      osc.stop(t + this.beatDuration * 0.4);
+      bassOsc.connect(filter);
+      filter.connect(bassGain);
+      bassGain.connect(this.musicGain);
+      bassOsc.start(t);
+      bassOsc.stop(t + this.beatDuration * 0.35);
     }
 
-    // 2. Chords on the off-beat (synth pads)
-    if (stepInChord === 2 || stepInChord === 6) {
-      chord.forEach((note) => {
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(noteToFreq(note), t);
+    // --- 3. RETRO CHORDS (ELEGANT BRASS-LIKE SYNTH PADS) ---
+    // Play full chord stabs on steps 1, 4, and 7 to complement the melody
+    if (stepInChord === 1 || stepInChord === 4 || stepInChord === 7) {
+      chord.forEach((note, idx) => {
+        const padOsc = this.ctx!.createOscillator();
+        const padGain = this.ctx!.createGain();
+        padOsc.type = 'sawtooth'; // soft brass stab
+        padOsc.frequency.setValueAtTime(noteToFreq(note), t);
         
-        gain.gain.setValueAtTime(0.04, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + this.beatDuration * 0.8);
+        // Lowpass filter to make it warm, not harsh
+        const padFilter = this.ctx!.createBiquadFilter();
+        padFilter.type = 'lowpass';
+        padFilter.frequency.setValueAtTime(500 + idx * 80, t);
+
+        const stabVolume = stepInChord === 1 ? 0.035 : 0.02;
+        padGain.gain.setValueAtTime(stabVolume, t);
+        padGain.gain.exponentialRampToValueAtTime(0.001, t + this.beatDuration * 0.6);
         
-        osc.connect(gain);
-        gain.connect(this.musicGain!);
-        osc.start(t);
-        osc.stop(t + this.beatDuration * 0.8);
+        padOsc.connect(padFilter);
+        padFilter.connect(padGain);
+        padGain.connect(this.musicGain!);
+        padOsc.start(t);
+        padOsc.stop(t + this.beatDuration * 0.6);
       });
     }
 
-    // 3. Simple retro melody arpeggio
-    // Play on step 0, 4, 6 of the bar
-    if (stepInChord === 0 || stepInChord === 3 || stepInChord === 5) {
+    // --- 4. ARCADE SPORTS MELODY ---
+    // High-energy hook on steps 0, 2, 4, 5
+    if (stepInChord === 0 || stepInChord === 2 || stepInChord === 4 || stepInChord === 5) {
       const melodyNotes = [
-        ['E5', 'G5', 'A5'], // Am chord melodies
-        ['A5', 'C6', 'F5'], // F
-        ['G5', 'B5', 'E5'], // C
-        ['D5', 'G5', 'B5']  // G
+        ['E5', 'G5', 'A5', 'C6'], // Am hook
+        ['A5', 'C6', 'D6', 'G6'], // Dm7 hook
+        ['G5', 'B5', 'C6', 'E6'], // G7 hook
+        ['C6', 'E6', 'G6', 'A6']  // Cmaj7 hook
       ];
-      const melodyChoice = melodyNotes[chordIndex][stepInChord % 3];
+      const melodyChoice = melodyNotes[chordIndex][stepInChord % 4];
       
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(noteToFreq(melodyChoice), t);
+      const leadOsc = this.ctx.createOscillator();
+      const leadGain = this.ctx.createGain();
+      leadOsc.type = 'triangle';
+      leadOsc.frequency.setValueAtTime(noteToFreq(melodyChoice), t);
       
-      // Delay effect
-      gain.gain.setValueAtTime(0.03, t);
-      gain.gain.linearRampToValueAtTime(0.02, t + 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + this.beatDuration * 0.5);
+      // Delay-like envelope echo effect
+      leadGain.gain.setValueAtTime(0.045, t);
+      leadGain.gain.linearRampToValueAtTime(0.035, t + 0.04);
+      leadGain.gain.exponentialRampToValueAtTime(0.0001, t + this.beatDuration * 0.45);
       
-      osc.connect(gain);
-      gain.connect(this.musicGain!);
-      osc.start(t);
-      osc.stop(t + this.beatDuration * 0.5);
+      leadOsc.connect(leadGain);
+      leadGain.connect(this.musicGain!);
+      leadOsc.start(t);
+      leadOsc.stop(t + this.beatDuration * 0.45);
     }
 
     this.currentStep = (this.currentStep + 1) % 32; // 32 steps total

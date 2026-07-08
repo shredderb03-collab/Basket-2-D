@@ -13,6 +13,7 @@ import {
 import { gameAudio } from './lib/audio';
 import SettingsHeader from './components/SettingsHeader';
 import BasketballCanvas from './components/BasketballCanvas';
+import ShopModal from './components/ShopModal';
 import { 
   Trophy, 
   HelpCircle, 
@@ -23,7 +24,9 @@ import {
   Award,
   Zap,
   Flame,
-  Volume2
+  Volume2,
+  Crown,
+  RotateCcw
 } from 'lucide-react';
 
 const INITIAL_SCORE_STATE: GameScoreState = {
@@ -40,9 +43,146 @@ export default function App() {
     sfxEnabled: true,
   });
   const [hummanEnabled, setHummanEnabled] = useState<boolean>(true);
-  const [ballRadius, setBallRadius] = useState<number>(11);
+  const [shotBlockingEnabled, setShotBlockingEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('ragdoll_basketball_shot_blocking');
+    return saved ? saved === 'true' : true;
+  });
+  const [ballRadius, setBallRadius] = useState<number>(18);
+  const [isShopOpen, setIsShopOpen] = useState<boolean>(false);
   const [scoreState, setScoreState] = useState<GameScoreState>(INITIAL_SCORE_STATE);
+  const [winner, setWinner] = useState<1 | 2 | null>(null);
   
+  // --- Shop & Economy System ---
+  const [money, setMoney] = useState<number>(() => {
+    const saved = localStorage.getItem('ragdoll_basketball_money');
+    return saved ? parseInt(saved, 10) : 100; // start with $100 so they can buy something!
+  });
+
+  const [unlockedItems, setUnlockedItems] = useState<string[]>(() => {
+    const saved = localStorage.getItem('ragdoll_basketball_unlocked');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [activeTrail, setActiveTrail] = useState<string>(() => {
+    return localStorage.getItem('ragdoll_basketball_trail') || 'default';
+  });
+
+  const [activeHat, setActiveHat] = useState<string>(() => {
+    return localStorage.getItem('ragdoll_basketball_hat') || 'none';
+  });
+
+  const [activeWeight, setActiveWeight] = useState<string>(() => {
+    return localStorage.getItem('ragdoll_basketball_weight') || 'normal';
+  });
+
+  const [activeBounce, setActiveBounce] = useState<string>(() => {
+    return localStorage.getItem('ragdoll_basketball_bounce') || 'normal';
+  });
+
+  const [restockTime, setRestockTime] = useState<number>(120);
+  const [shopStock, setShopStock] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('ragdoll_basketball_shop_stock');
+    return saved ? JSON.parse(saved) : {
+      gold_trail: 1,
+      featherweight: 2,
+      super_bouncy: 1,
+      cyberpunk_hat: 1,
+      crown: 1
+    };
+  });
+
+  // Automatically save progress whenever money or unlocked items update!
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_money', money.toString());
+  }, [money]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_shot_blocking', shotBlockingEnabled.toString());
+  }, [shotBlockingEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
+  }, [unlockedItems]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_trail', activeTrail);
+  }, [activeTrail]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_hat', activeHat);
+  }, [activeHat]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_weight', activeWeight);
+  }, [activeWeight]);
+
+  useEffect(() => {
+    localStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+  }, [activeBounce]);
+
+  // Reset game scores when switching modes
+  useEffect(() => {
+    setScoreState(INITIAL_SCORE_STATE);
+    setWinner(null);
+  }, [mode]);
+
+  // Monitor scores for first to 30 wins
+  useEffect(() => {
+    if (mode === GameMode.PRACTICE) {
+      setWinner(null);
+      return;
+    }
+    if (scoreState.player1.score >= 30) {
+      setWinner(1);
+      try {
+        gameAudio.playChimeSound();
+        setTimeout(() => gameAudio.playCheerSound(), 500);
+      } catch (e) {}
+    } else if (scoreState.player2.score >= 30) {
+      setWinner(2);
+      try {
+        gameAudio.playChimeSound();
+        setTimeout(() => gameAudio.playCheerSound(), 500);
+      } catch (e) {}
+    } else {
+      setWinner(null);
+    }
+  }, [scoreState.player1.score, scoreState.player2.score, mode]);
+
+  // Shop Restock Timer (ticks down 120s / 2mins)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRestockTime((prev) => {
+        if (prev <= 1) {
+          try { gameAudio.playChimeSound(); } catch (e) {}
+          const newStock = {
+            gold_trail: Math.floor(Math.random() * 3),
+            featherweight: Math.floor(Math.random() * 4),
+            super_bouncy: Math.floor(Math.random() * 2),
+            cyberpunk_hat: Math.floor(Math.random() * 3),
+            crown: Math.floor(Math.random() * 2)
+          };
+          setShopStock(newStock);
+          localStorage.setItem('ragdoll_basketball_shop_stock', JSON.stringify(newStock));
+          return 120;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleScoreMade = (isSwish: boolean, isPlayerTurn: boolean) => {
+    if (isPlayerTurn) {
+      const reward = isSwish ? 50 : 25;
+      setMoney((prev) => prev + reward);
+    }
+  };
+
+  const computedMass = activeWeight === 'featherweight' ? 0.60 : 1.0;
+  const computedRestitution = activeBounce === 'super_bouncy' ? 0.96 : 0.88;
+
   // Drag-and-drop file upload overlay state
   const [isDraggingFileOver, setIsDraggingFileOver] = useState(false);
   const [customMusicName, setCustomMusicName] = useState<string>('');
@@ -77,8 +217,9 @@ export default function App() {
   // Reset core scoreboard state
   const handleResetGame = () => {
     setScoreState(INITIAL_SCORE_STATE);
+    setWinner(null);
     // Play level up/chime sound to confirm
-    gameAudio.playChimeSound();
+    try { gameAudio.playChimeSound(); } catch (e) {}
   };
 
   // Handle global drag & drop for background audio files
@@ -136,8 +277,26 @@ export default function App() {
           resetGame={handleResetGame}
           hummanEnabled={hummanEnabled}
           setHummanEnabled={setHummanEnabled}
+          shotBlockingEnabled={shotBlockingEnabled}
+          setShotBlockingEnabled={setShotBlockingEnabled}
           ballRadius={ballRadius}
           setBallRadius={setBallRadius}
+          money={money}
+          setMoney={setMoney}
+          unlockedItems={unlockedItems}
+          setUnlockedItems={setUnlockedItems}
+          activeTrail={activeTrail}
+          setActiveTrail={setActiveTrail}
+          activeHat={activeHat}
+          setActiveHat={setActiveHat}
+          activeWeight={activeWeight}
+          setActiveWeight={setActiveWeight}
+          activeBounce={activeBounce}
+          setActiveBounce={setActiveBounce}
+          restockTime={restockTime}
+          shopStock={shopStock}
+          setShopStock={setShopStock}
+          onOpenShop={() => setIsShopOpen(true)}
         />
 
         {/* 2D CANVAS ARENA WRAPPER */}
@@ -154,8 +313,96 @@ export default function App() {
             setScoreState={setScoreState}
             audioSettings={audioSettings}
             hummanEnabled={hummanEnabled}
+            shotBlockingEnabled={shotBlockingEnabled}
             ballRadius={ballRadius}
+            activeTrail={activeTrail}
+            activeHat={activeHat}
+            ballMass={computedMass}
+            ballRestitution={computedRestitution}
+            onScoreMade={handleScoreMade}
           />
+          
+          {/* Victory overlay for first to 30 wins */}
+          <AnimatePresence>
+            {winner !== null && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="absolute inset-0 bg-slate-950/90 backdrop-blur-md rounded-3xl flex flex-col items-center justify-center p-8 text-center z-40 border border-emerald-500/30 shadow-2xl shadow-emerald-500/10"
+                id="victory-overlay"
+              >
+                <div className="absolute top-4 left-4 flex gap-1 animate-pulse">
+                  <Sparkles className="w-5 h-5 text-amber-400" />
+                  <Sparkles className="w-3 h-3 text-emerald-400 mt-2" />
+                </div>
+                <div className="absolute bottom-4 right-4 flex gap-1 animate-pulse">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  <Sparkles className="w-5 h-5 text-amber-400 mb-2" />
+                </div>
+
+                <motion.div
+                  initial={{ y: -20, scale: 0.8 }}
+                  animate={{ y: 0, scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 200, delay: 0.15 }}
+                  className="mb-4 relative"
+                >
+                  <div className="w-20 h-20 bg-gradient-to-tr from-amber-500 to-yellow-300 rounded-full flex items-center justify-center shadow-lg shadow-amber-500/20">
+                    <Trophy className="w-10 h-10 text-slate-950 animate-bounce" />
+                  </div>
+                  <motion.div 
+                    animate={{ rotate: [0, 15, -15, 0] }}
+                    transition={{ repeat: Infinity, duration: 2.5, ease: 'easeInOut' }}
+                    className="absolute -top-3 -right-3"
+                  >
+                    <Crown className="w-8 h-8 text-yellow-400 fill-yellow-400 drop-shadow" />
+                  </motion.div>
+                </motion.div>
+
+                <h2 className="text-3xl font-black text-white tracking-wider uppercase mb-1 drop-shadow bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-emerald-300 to-amber-400 animate-pulse">
+                  {mode === GameMode.VS_CPU 
+                    ? (winner === 1 ? 'Human Victory!' : 'CPU Victory!')
+                    : (winner === 1 ? 'Player 1 Wins!' : 'Player 2 Wins!')
+                  }
+                </h2>
+                
+                <p className="text-slate-400 text-xs font-mono tracking-widest uppercase mb-4">
+                  First to 30 Points Achieved!
+                </p>
+
+                <div className="flex items-center gap-6 bg-slate-900/80 px-6 py-3 rounded-2xl border border-slate-800 mb-6 font-mono">
+                  <div>
+                    <span className="block text-[10px] text-slate-500 uppercase">
+                      {mode === GameMode.VS_CPU ? 'You' : 'P1 Score'}
+                    </span>
+                    <span className="text-2xl font-black text-orange-400">
+                      {scoreState.player1.score}
+                    </span>
+                  </div>
+                  <div className="text-slate-600 text-lg font-bold">VS</div>
+                  <div>
+                    <span className="block text-[10px] text-slate-500 uppercase">
+                      {mode === GameMode.VS_CPU ? 'Bot' : 'P2 Score'}
+                    </span>
+                    <span className="text-2xl font-black text-sky-400">
+                      {scoreState.player2.score}
+                    </span>
+                  </div>
+                </div>
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleResetGame}
+                  className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-sm px-6 py-3 rounded-xl shadow-lg shadow-orange-500/20 border border-orange-400/20 cursor-pointer transition-all"
+                  id="rematch-btn"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Play Rematch
+                </motion.button>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Dynamic drag & drop audio alert overlay */}
           <AnimatePresence>
@@ -321,6 +568,26 @@ export default function App() {
           </div>
         )}
       </footer>
+
+      <ShopModal
+        isOpen={isShopOpen}
+        onClose={() => setIsShopOpen(false)}
+        money={money}
+        setMoney={setMoney}
+        unlockedItems={unlockedItems}
+        setUnlockedItems={setUnlockedItems}
+        activeTrail={activeTrail}
+        setActiveTrail={setActiveTrail}
+        activeHat={activeHat}
+        setActiveHat={setActiveHat}
+        activeWeight={activeWeight}
+        setActiveWeight={setActiveWeight}
+        activeBounce={activeBounce}
+        setActiveBounce={setActiveBounce}
+        restockTime={restockTime}
+        shopStock={shopStock}
+        setShopStock={setShopStock}
+      />
     </div>
   );
 }

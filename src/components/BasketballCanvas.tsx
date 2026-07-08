@@ -13,7 +13,13 @@ interface BasketballCanvasProps {
   setScoreState: React.Dispatch<React.SetStateAction<GameScoreState>>;
   audioSettings: { musicEnabled: boolean; sfxEnabled: boolean };
   hummanEnabled: boolean;
+  shotBlockingEnabled: boolean;
   ballRadius: number;
+  activeTrail: string;
+  activeHat: string;
+  ballMass: number;
+  ballRestitution: number;
+  onScoreMade: (isSwish: boolean, isPlayerTurn: boolean) => void;
 }
 
 interface RagdollJoint {
@@ -74,13 +80,23 @@ const HEIGHT = 500;
 const BALL_START_X = 140;
 const BALL_START_Y = 360;
 
+const getBallStartX = (turn: number) => {
+  return turn === 2 ? 80 : 140; // Turn 2 is CPU (further back!), Turn 1 is human (at 140)
+};
+
 export default function BasketballCanvas({
   mode,
   scoreState,
   setScoreState,
   audioSettings,
   hummanEnabled,
+  shotBlockingEnabled,
   ballRadius,
+  activeTrail,
+  activeHat,
+  ballMass,
+  ballRestitution,
+  onScoreMade,
 }: BasketballCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -89,11 +105,16 @@ export default function BasketballCanvas({
     mode,
     scoreState,
     hummanEnabled,
+    shotBlockingEnabled,
+    activeTrail,
+    activeHat,
     ragdoll: {
       joints: [] as RagdollJoint[],
     },
     hummanAttached: true,
     hummanReattachCooldown: 0,
+    hummanHasTouchedGround: true,
+    hummanHighUp: false,
     hummanColorIndex: 0,
     hummanPatternIndex: 0,
     cpuRagdoll: {
@@ -101,13 +122,20 @@ export default function BasketballCanvas({
     },
     cpuHummanAttached: false,
     cpuHummanReattachCooldown: 0,
+    cpuHummanHasTouchedGround: true,
+    cpuHummanHighUp: false,
     cpuPrecision: 1.0,
+    cpuLastShotOffset: 0,
+    cpuClosestDistY: Infinity,
+    cpuClosestX: 0,
+    lastPlayerShotVel: { x: 0, y: 0 } as Vector2D,
+    lastPlayerSuccessVel: null as Vector2D | null,
     ball: {
       pos: { x: BALL_START_X, y: BALL_START_Y },
       vel: { x: 0, y: 0 },
       radius: 18,
-      mass: 1.0,
-      restitution: 0.88, // 88% bounciness (more bouncy!)
+      mass: ballMass,
+      restitution: ballRestitution, // 88% bounciness (more bouncy!)
       rotation: 0,
       angularVelocity: 0,
     } as PhysicsObject,
@@ -166,6 +194,26 @@ export default function BasketballCanvas({
   useEffect(() => {
     stateRef.current.ball.radius = ballRadius;
   }, [ballRadius]);
+
+  useEffect(() => {
+    stateRef.current.activeTrail = activeTrail;
+  }, [activeTrail]);
+
+  useEffect(() => {
+    stateRef.current.activeHat = activeHat;
+  }, [activeHat]);
+
+  useEffect(() => {
+    stateRef.current.ball.mass = ballMass;
+  }, [ballMass]);
+
+  useEffect(() => {
+    stateRef.current.ball.restitution = ballRestitution;
+  }, [ballRestitution]);
+
+  useEffect(() => {
+    stateRef.current.shotBlockingEnabled = shotBlockingEnabled;
+  }, [shotBlockingEnabled]);
 
   useEffect(() => {
     stateRef.current.hummanEnabled = hummanEnabled;
@@ -249,9 +297,11 @@ export default function BasketballCanvas({
         if (currentTurn === 1) {
           r.hummanAttached = false;
           r.hummanReattachCooldown = 120;
+          r.hummanHasTouchedGround = false;
         } else {
           r.cpuHummanAttached = false;
           r.cpuHummanReattachCooldown = 120;
+          r.cpuHummanHasTouchedGround = false;
         }
         r.floatingTexts.push({
           pos: { x: b.pos.x, y: b.pos.y - 25 },
@@ -273,6 +323,34 @@ export default function BasketballCanvas({
         gameAudio.playRimSound();
       };
 
+      const spawnDebris = (x: number, y: number, intensity: number, type: 'court' | 'human' | 'hoop') => {
+        const count = Math.min(18, Math.floor(intensity * 1.6) + 4);
+        for (let i = 0; i < count; i++) {
+          const size = Math.random() * 4.5 + 1.5;
+          let color = '#475569'; // grey asphalt slate court debris
+          if (type === 'human') {
+            color = `rgba(249, 115, 22, ${0.4 + Math.random() * 0.5})`; // glowing human skin debris/sparks
+          } else if (type === 'hoop') {
+            color = '#fbbf24'; // golden backboard/rim debris
+          } else {
+            color = Math.random() < 0.4 ? '#fb923c' : '#334155'; // asphalt & orange playground paint chunks
+          }
+
+          r.particles.push({
+            pos: { x: x + (Math.random() - 0.5) * 8, y: y + (Math.random() - 0.5) * 4 },
+            vel: { 
+              x: (Math.random() - 0.5) * (intensity * 0.8) + (Math.random() > 0.5 ? 1 : -1) * (intensity * 0.1), 
+              y: -Math.random() * (intensity * 0.75) - 1 
+            },
+            color,
+            size,
+            alpha: 1.0,
+            decay: 0.015 + Math.random() * 0.015,
+            gravity: 0.22, // falls back down to court!
+          });
+        }
+      };
+
       const updateSingleRagdoll = (
         joints: RagdollJoint[],
         playerIndex: 1 | 2
@@ -290,8 +368,20 @@ export default function BasketballCanvas({
           j.y += vy + 0.32;
         });
 
-        // 2. Ball Collisions & Knockout (only if not attached to the ball)
+        // Track if unattached ragdoll goes high up in the air
         if (!isAttached) {
+          const isHigh = joints.some(j => j.y < 280);
+          if (isHigh) {
+            if (playerIndex === 1) {
+              r.hummanHighUp = true;
+            } else {
+              r.cpuHummanHighUp = true;
+            }
+          }
+        }
+
+        // 2. Ball Collisions & Knockout (only if not attached to the ball and shot blocking is enabled after launch safety period)
+        if (!isAttached && r.shotBlockingEnabled && r.shotTimer > 350) {
           let wasHitByBall = false;
           let hitJointIndex = -1;
           const reattachCooldown = playerIndex === 1 ? r.hummanReattachCooldown : r.cpuHummanReattachCooldown;
@@ -331,22 +421,28 @@ export default function BasketballCanvas({
             const newCooldown = 120; // 2 seconds
             if (playerIndex === 1) {
               r.hummanReattachCooldown = newCooldown;
+              r.hummanHasTouchedGround = false;
             } else {
               r.cpuHummanReattachCooldown = newCooldown;
+              r.cpuHummanHasTouchedGround = false;
             }
 
-            const pushScale = Math.max(1.8, ballSpeed * 0.65);
-            const pushX = b.vel.x * pushScale + (b.vel.x > 0 ? 3.5 : -3.5);
-            const pushY = Math.min(-5.0, b.vel.y * pushScale - 4.5);
+            const pushScale = Math.max(2.8, ballSpeed * 1.3);
+            const pushX = b.vel.x * pushScale + (b.vel.x > 0 ? 6.5 : -6.5);
+            const pushY = Math.min(-8.0, b.vel.y * pushScale - 8.5);
 
             joints.forEach(j => {
-              const flailX = (Math.random() - 0.5) * 5;
-              const flailY = (Math.random() - 0.5) * 5;
+              const flailX = (Math.random() - 0.5) * 8;
+              const flailY = (Math.random() - 0.5) * 8;
               j.x += pushX + flailX;
               j.y += pushY + flailY;
-              j.prevX = j.x - (pushX + flailX * 1.6);
-              j.prevY = j.y - (pushY + flailY * 1.6);
+              j.prevX = j.x - (pushX + flailX * 1.8);
+              j.prevY = j.y - (pushY + flailY * 1.8);
             });
+
+            // Spawn human physical sparks and court debris on high-intensity hits
+            spawnDebris(b.pos.x, b.pos.y, ballSpeed * 3.5, 'human');
+            spawnDebris(b.pos.x, b.pos.y, ballSpeed * 2.5, 'court');
 
             // Text feedback
             const nameLabel = playerIndex === 1 ? 'PLAYER' : (r.mode === GameMode.VS_CPU ? 'BOT' : 'PLAYER 2');
@@ -367,18 +463,18 @@ export default function BasketballCanvas({
               velocityY: -2.2
             });
 
-            // Spark particles
-            const particleCount = Math.floor(ballSpeed * 3) + 12;
+            // Spark particles - significantly more particles!
+            const particleCount = Math.floor(ballSpeed * 6) + 35;
             const pColor = playerIndex === 1 ? '#ef4444' : '#f97316';
             for (let k = 0; k < particleCount; k++) {
               r.particles.push({
-                pos: { x: b.pos.x + (Math.random() - 0.5) * 15, y: b.pos.y + (Math.random() - 0.5) * 15 },
-                vel: { x: (Math.random() - 0.5) * 10 + (pushX * 0.2), y: -Math.random() * 6 - 2 },
+                pos: { x: b.pos.x + (Math.random() - 0.5) * 20, y: b.pos.y + (Math.random() - 0.5) * 20 },
+                vel: { x: (Math.random() - 0.5) * 12 + (pushX * 0.25), y: -Math.random() * 8 - 3 },
                 color: pColor,
-                size: Math.random() * 4 + 2,
+                size: Math.random() * 5 + 2,
                 alpha: 1.0,
-                decay: 0.02,
-                gravity: 0.15
+                decay: 0.015,
+                gravity: 0.18
               });
             }
 
@@ -406,8 +502,10 @@ export default function BasketballCanvas({
             const dy = b.pos.y - chest.y;
             const dist = Math.sqrt(dx * dx + dy * dy) || 1;
 
-            // Reattach if reached
-            if (currentCooldown === 0 && dist <= b.radius + 15) {
+            const hasTouchedGround = playerIndex === 1 ? r.hummanHasTouchedGround : r.cpuHummanHasTouchedGround;
+
+            // Reattach if reached and touched ground
+            if (currentCooldown === 0 && hasTouchedGround && dist <= b.radius + 15) {
               if (playerIndex === 1) {
                 r.hummanAttached = true;
               } else {
@@ -423,18 +521,18 @@ export default function BasketballCanvas({
                 velocityY: -1.8
               });
               const sparkColor = playerIndex === 1 ? '#10b981' : '#a855f7';
-              for (let i = 0; i < 15; i++) {
+              for (let i = 0; i < 25; i++) { // Increased sparkles on reattach!
                 r.particles.push({
                   pos: { x: joints[2].x, y: joints[2].y },
-                  vel: { x: (Math.random() - 0.5) * 6, y: (Math.random() - 0.5) * 6 },
+                  vel: { x: (Math.random() - 0.5) * 8, y: (Math.random() - 0.5) * 8 },
                   color: sparkColor,
-                  size: Math.random() * 3 + 2,
+                  size: Math.random() * 4 + 2,
                   alpha: 1.0,
-                  decay: 0.03,
-                  gravity: 0.1
+                  decay: 0.025,
+                  gravity: 0.12
                 });
               }
-            } else if (currentCooldown === 0) {
+            } else if (currentCooldown === 0 && hasTouchedGround) {
               // Crawl movement towards the ball
               const dirX = dx / dist;
               const dirY = dy / dist;
@@ -530,39 +628,93 @@ export default function BasketballCanvas({
                   velocityY: -1.0
                 });
               }
+            } else {
+              // Active but on cooldown or in the air - flail!
+              if (!hasTouchedGround) {
+                const cycle = Date.now() * 0.03;
+                joints[0].x += Math.sin(cycle) * 1.5;
+                joints[0].y += Math.cos(cycle) * 1.5;
+                joints[1].x += Math.cos(cycle) * 1.5;
+                joints[1].y += Math.sin(cycle) * 1.5;
+                joints[5].x += Math.sin(cycle * 0.8) * 1.2;
+                joints[6].x += Math.cos(cycle * 0.8) * 1.2;
+
+                if (Math.random() < 0.015) {
+                  const airTexts = playerIndex === 1 ? [
+                    'Aaaaaaaaah!',
+                    'I am flying!',
+                    'Noooo ground!',
+                    'Wheeeeeee!',
+                    'Oof, gravity...'
+                  ] : [
+                    '🤖 SYSTEM OVERLOAD!',
+                    '🤖 RE-CALIBRATING GYROS!',
+                    '🤖 GRAVITY FLUID DETECTED!',
+                    '🤖 BALANCE CORE DISRUPTED!'
+                  ];
+                  r.floatingTexts.push({
+                    pos: { x: joints[3].x, y: joints[3].y - 25 },
+                    text: airTexts[Math.floor(Math.random() * airTexts.length)],
+                    color: playerIndex === 1 ? '#f87171' : '#f43f5e',
+                    life: 1.0,
+                    velocityY: -1.5
+                  });
+                }
+              }
             }
           } else {
-            // INACTIVE player stands and cheers at the sidelines!
-            const sideX = 60;
-            const floorY = 440;
-            
-            joints[4].x = joints[4].x * 0.94 + sideX * 0.06;
-            joints[2].x = joints[2].x * 0.94 + sideX * 0.06;
-            joints[3].x = joints[3].x * 0.94 + sideX * 0.06;
-
-            joints[4].y = joints[4].y * 0.94 + (floorY - 20) * 0.06;
-            joints[2].y = joints[2].y * 0.94 + (floorY - 35) * 0.06;
-            joints[3].y = joints[3].y * 0.94 + (floorY - 50) * 0.06;
-
-            joints[5].x = joints[5].x * 0.90 + (sideX - 6) * 0.10;
-            joints[5].y = joints[5].y * 0.90 + (floorY - joints[5].radius) * 0.10;
-            joints[6].x = joints[6].x * 0.90 + (sideX + 6) * 0.10;
-            joints[6].y = joints[6].y * 0.90 + (floorY - joints[6].radius) * 0.10;
-
-            if (r.ballState === 'flight') {
-              const waveCycle = Date.now() * 0.015;
-              const handY = floorY - 55 + Math.sin(waveCycle) * 6;
-              joints[0].x = joints[0].x * 0.85 + (sideX - 10 + Math.cos(waveCycle) * 3) * 0.15;
-              joints[0].y = joints[0].y * 0.85 + handY * 0.15;
-
-              joints[1].x = joints[1].x * 0.85 + (sideX + 10 - Math.cos(waveCycle) * 3) * 0.15;
-              joints[1].y = joints[1].y * 0.85 + handY * 0.15;
+            const hasTouchedGround = playerIndex === 1 ? r.hummanHasTouchedGround : r.cpuHummanHasTouchedGround;
+            if (!hasTouchedGround) {
+              if (Math.random() < 0.005) {
+                const airTexts = playerIndex === 1 ? [
+                  'Ouch!',
+                  'Double ouch!',
+                  'My spine...'
+                ] : [
+                  '🤖 SYSTEM DAMAGE...',
+                  '🤖 IMPACT FORCE EXCEEDED...'
+                ];
+                r.floatingTexts.push({
+                  pos: { x: joints[3].x, y: joints[3].y - 25 },
+                  text: airTexts[Math.floor(Math.random() * airTexts.length)],
+                  color: playerIndex === 1 ? '#ef4444' : '#a855f7',
+                  life: 1.0,
+                  velocityY: -1.5
+                });
+              }
             } else {
-              joints[0].x = joints[0].x * 0.92 + (sideX - 8) * 0.08;
-              joints[0].y = joints[0].y * 0.92 + (floorY - 25) * 0.08;
+              // INACTIVE player stands and cheers at the sidelines!
+              const sideX = 60;
+              const floorY = 440;
+              
+              joints[4].x = joints[4].x * 0.94 + sideX * 0.06;
+              joints[2].x = joints[2].x * 0.94 + sideX * 0.06;
+              joints[3].x = joints[3].x * 0.94 + sideX * 0.06;
 
-              joints[1].x = joints[1].x * 0.92 + (sideX + 8) * 0.08;
-              joints[1].y = joints[1].y * 0.92 + (floorY - 25) * 0.08;
+              joints[4].y = joints[4].y * 0.94 + (floorY - 20) * 0.06;
+              joints[2].y = joints[2].y * 0.94 + (floorY - 35) * 0.06;
+              joints[3].y = joints[3].y * 0.94 + (floorY - 50) * 0.06;
+
+              joints[5].x = joints[5].x * 0.90 + (sideX - 6) * 0.10;
+              joints[5].y = joints[5].y * 0.90 + (floorY - joints[5].radius) * 0.10;
+              joints[6].x = joints[6].x * 0.90 + (sideX + 6) * 0.10;
+              joints[6].y = joints[6].y * 0.90 + (floorY - joints[6].radius) * 0.10;
+
+              if (r.ballState === 'flight') {
+                const waveCycle = Date.now() * 0.015;
+                const handY = floorY - 55 + Math.sin(waveCycle) * 6;
+                joints[0].x = joints[0].x * 0.85 + (sideX - 10 + Math.cos(waveCycle) * 3) * 0.15;
+                joints[0].y = joints[0].y * 0.85 + handY * 0.15;
+
+                joints[1].x = joints[1].x * 0.85 + (sideX + 10 - Math.cos(waveCycle) * 3) * 0.15;
+                joints[1].y = joints[1].y * 0.85 + handY * 0.15;
+              } else {
+                joints[0].x = joints[0].x * 0.92 + (sideX - 8) * 0.08;
+                joints[0].y = joints[0].y * 0.92 + (floorY - 25) * 0.08;
+
+                joints[1].x = joints[1].x * 0.92 + (sideX + 8) * 0.08;
+                joints[1].y = joints[1].y * 0.92 + (floorY - 25) * 0.08;
+              }
             }
           }
         }
@@ -631,15 +783,105 @@ export default function BasketballCanvas({
         }
 
         // 5. Floor & wall bounds
+        let touchedFloor = false;
+        let maxImpactVy = 0;
+        let impactX = joints[3].x; // Default to chest/head area
+
         joints.forEach(j => {
           const floorY = 440;
-          if (j.y + j.radius > floorY) {
+          if (j.y + j.radius >= floorY - 1.0) {
+            const vy = j.y - j.prevY;
+            if (vy > maxImpactVy) {
+              maxImpactVy = vy;
+              impactX = j.x;
+            }
             j.y = floorY - j.radius;
             j.x = j.x * 0.95 + j.prevX * 0.05;
+            touchedFloor = true;
+
+            // Bounce! If hitting the ground, reverse the velocity
+            // If it's a high impact, we'll give it a solid bounce!
+            if (vy > 1.2) {
+              const bounceRestitution = vy > 3.5 ? 0.40 : 0.25;
+              j.prevY = j.y + vy * bounceRestitution;
+              // Add a bit of horizontal bounce variance
+              const vx = j.x - j.prevX;
+              j.prevX = j.x + vx * 0.25;
+            }
           }
           if (j.x - j.radius < 0) j.x = j.radius;
           if (j.x + j.radius > WIDTH) j.x = WIDTH - j.radius;
         });
+
+        if (touchedFloor) {
+          if (playerIndex === 1) {
+            r.hummanHasTouchedGround = true;
+          } else {
+            r.cpuHummanHasTouchedGround = true;
+          }
+
+          const isHighUp = playerIndex === 1 ? r.hummanHighUp : r.cpuHummanHighUp;
+
+          // If high-velocity impact (> 3.0) and unattached, and was high up in the air, trigger the 3-second (180 frames) KO!
+          if (maxImpactVy > 3.0 && !isAttached && isHighUp) {
+            const currentCooldown = playerIndex === 1 ? r.hummanReattachCooldown : r.cpuHummanReattachCooldown;
+            if (currentCooldown < 180) {
+              if (playerIndex === 1) {
+                r.hummanReattachCooldown = 180;
+              } else {
+                r.cpuHummanReattachCooldown = 180;
+              }
+
+              // Juicy physical explosions
+              spawnDebris(impactX, 440, maxImpactVy * 3.5, 'court');
+              spawnDebris(impactX, 440, maxImpactVy * 2.5, 'human');
+
+              // Visceral sound effects!
+              try {
+                gameAudio.playRimSound();
+                setTimeout(() => gameAudio.playBounceSound(0.95), 120);
+              } catch (e) {}
+
+              // Spark particles
+              const particleCount = Math.floor(maxImpactVy * 8) + 25;
+              const pColor = playerIndex === 1 ? '#ef4444' : '#a855f7';
+              for (let k = 0; k < particleCount; k++) {
+                r.particles.push({
+                  pos: { x: impactX + (Math.random() - 0.5) * 20, y: 440 + (Math.random() - 0.5) * 10 },
+                  vel: { x: (Math.random() - 0.5) * 10, y: -Math.random() * 8 - 3 },
+                  color: pColor,
+                  size: Math.random() * 4 + 2,
+                  alpha: 1.0,
+                  decay: 0.012,
+                  gravity: 0.16
+                });
+              }
+
+              // Text feedback
+              const nameLabel = playerIndex === 1 ? 'PLAYER' : (r.mode === GameMode.VS_CPU ? 'BOT' : 'PLAYER 2');
+              const koTexts = [
+                `💥 ${nameLabel} SPLATTED! 3s KO! 💥`,
+                `🤕 ${nameLabel} CRUNCHED! (3s KO) 🤕`,
+                `🥴 ${nameLabel} BRAIN SHAKEN! 🥴`,
+                `💀 OUT COLD! (3s RECOVER) 💀`
+              ];
+              r.floatingTexts.push({
+                pos: { x: joints[3].x, y: joints[3].y - 30 },
+                text: koTexts[Math.floor(Math.random() * koTexts.length)],
+                color: playerIndex === 1 ? '#f87171' : '#c084fc',
+                life: 2.2,
+                velocityY: -1.2
+              });
+            }
+          }
+
+          // Reset the high up flags after resolving landing
+          if (playerIndex === 1) {
+            r.hummanHighUp = false;
+          } else {
+            r.cpuHummanHighUp = false;
+          }
+        }
       };
 
       // Ensure audio context is running when game is active
@@ -698,6 +940,16 @@ export default function BasketballCanvas({
         b.pos.x += b.vel.x;
         b.pos.y += b.vel.y;
 
+        // Tracking closest shot point for CPU adaptive self-correction
+        if (r.scoreState.currentTurn === 2) {
+          const targetY = r.hoop.rimY;
+          const distY = Math.abs(b.pos.y - targetY);
+          if (distY < r.cpuClosestDistY) {
+            r.cpuClosestDistY = distY;
+            r.cpuClosestX = b.pos.x;
+          }
+        }
+
         // Apply Rotation spin based on velocity
         b.rotation += b.angularVelocity;
         b.angularVelocity *= 0.98; // rotational friction
@@ -705,14 +957,17 @@ export default function BasketballCanvas({
         // Trail particles
         if (Math.abs(b.vel.x) > 1 || Math.abs(b.vel.y) > 1) {
           if (Math.random() < 0.4) {
+            const isGold = r.activeTrail === 'gold_trail';
             r.particles.push({
               pos: { x: b.pos.x, y: b.pos.y },
               vel: { x: (Math.random() - 0.5) * 1, y: (Math.random() - 0.5) * 1 },
-              color: `rgba(${230 + Math.random() * 25}, ${110 + Math.random() * 60}, 20, 0.65)`,
-              size: Math.random() * 4 + 3,
+              color: isGold 
+                ? `rgba(${240 + Math.random() * 15}, ${195 + Math.random() * 45}, 0, 0.85)`
+                : `rgba(${230 + Math.random() * 25}, ${110 + Math.random() * 60}, 20, 0.65)`,
+              size: isGold ? Math.random() * 5 + 3.5 : Math.random() * 4 + 3,
               alpha: 0.8,
-              decay: 0.03,
-              gravity: -0.02
+              decay: isGold ? 0.025 : 0.03,
+              gravity: isGold ? -0.045 : -0.02
             });
           }
         }
@@ -722,13 +977,18 @@ export default function BasketballCanvas({
         // A. FLOOR COLLISION
         const floorY = 440;
         if (b.pos.y + b.radius >= floorY) {
-          const hitSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
+          const hitSpeed = Math.abs(b.vel.y);
           b.pos.y = floorY - b.radius;
           b.vel.y = -Math.abs(b.vel.y) * b.restitution;
           
           const activeAttached = r.scoreState.currentTurn === 1 ? r.hummanAttached : r.cpuHummanAttached;
           if (r.hummanEnabled && activeAttached && hitSpeed > 7.5) {
             triggerWipeout('WIPEOUT! OOF!', '#f43f5e');
+          }
+
+          // Spawn ground court debris on floor hit!
+          if (hitSpeed > 2.5) {
+            spawnDebris(b.pos.x, floorY, hitSpeed, 'court');
           }
 
           // Friction rolls the ball
@@ -760,6 +1020,10 @@ export default function BasketballCanvas({
             triggerWipeout('WALL WIPEOUT!', '#ef4444');
           }
 
+          if (hitSpeed > 2.5) {
+            spawnDebris(0, b.pos.y, hitSpeed, 'court');
+          }
+
           if (Math.abs(b.vel.x) > 0.5) gameAudio.playBounceSound(Math.abs(b.vel.x) / 8);
         }
         if (b.pos.x + b.radius > WIDTH) {
@@ -770,6 +1034,10 @@ export default function BasketballCanvas({
           const activeAttached = r.scoreState.currentTurn === 1 ? r.hummanAttached : r.cpuHummanAttached;
           if (r.hummanEnabled && activeAttached && hitSpeed > 7.5) {
             triggerWipeout('WALL WIPEOUT!', '#ef4444');
+          }
+
+          if (hitSpeed > 2.5) {
+            spawnDebris(WIDTH, b.pos.y, hitSpeed, 'court');
           }
 
           if (Math.abs(b.vel.x) > 0.5) gameAudio.playBounceSound(Math.abs(b.vel.x) / 8);
@@ -818,6 +1086,10 @@ export default function BasketballCanvas({
           const activeAttached = r.scoreState.currentTurn === 1 ? r.hummanAttached : r.cpuHummanAttached;
           if (r.hummanEnabled && activeAttached && hitSpeed > 7.5) {
             triggerWipeout('BOARD WIPEOUT!', '#f43f5e');
+          }
+
+          if (hitSpeed > 2.5) {
+            spawnDebris(b.pos.x, b.pos.y, hitSpeed, 'hoop');
           }
 
           // Backboard sound
@@ -965,6 +1237,7 @@ export default function BasketballCanvas({
               if (prev.currentTurn === 1) {
                 next.player1.score += points;
                 next.player1.shotsMade += 1;
+                r.lastPlayerSuccessVel = { ...r.lastPlayerShotVel };
               } else {
                 next.player2.score += points;
                 next.player2.shotsMade += 1;
@@ -974,6 +1247,7 @@ export default function BasketballCanvas({
               if (prev.currentTurn === 1) {
                 next.player1.score += points;
                 next.player1.shotsMade += 1;
+                r.lastPlayerSuccessVel = { ...r.lastPlayerShotVel };
               } else {
                 next.player2.score += points;
                 next.player2.shotsMade += 1;
@@ -982,6 +1256,9 @@ export default function BasketballCanvas({
 
             return next;
           });
+
+          // Trigger the shop money and progress saving callback
+          onScoreMade(r.isSwish, r.scoreState.currentTurn === 1);
         }
 
         // --- RESET CONDITIONS ---
@@ -1029,7 +1306,8 @@ export default function BasketballCanvas({
             // CPU precision adjustment and emote text before turn shifts
             if (r.mode === GameMode.VS_CPU && r.scoreState.currentTurn === 2) {
               if (r.hasScoredCurrentShot) {
-                r.cpuPrecision = 1.35; // lock in high accuracy!
+                r.cpuPrecision = Math.max(r.cpuPrecision || 1.0, 2.5); // lock in high accuracy!
+                r.cpuLastShotOffset = 0; // reset offset correction
                 const hitTexts = ["🤖 TARGET LOCKED", "🤖 SPLASH", "🤖 CALCULATION SUCCESS", "🤖 BOOM! SWISH!"];
                 r.floatingTexts.push({
                   pos: { x: b.pos.x < 0 || b.pos.x > WIDTH ? WIDTH / 2 : b.pos.x, y: 150 },
@@ -1039,8 +1317,20 @@ export default function BasketballCanvas({
                   velocityY: -1.2
                 });
               } else {
-                r.cpuPrecision = Math.min(3.0, (r.cpuPrecision || 1.0) + 0.35); // calibrate error smaller
-                const missTexts = ["🤖 Trajectory error detected", "🤖 Recalibrating wind factor", "🤖 Targeting algorithm refined", "🤖 Upgrading optical sensors"];
+                r.cpuPrecision = Math.min(4.0, (r.cpuPrecision || 1.0) + 0.60); // calibrate error smaller (faster learning!)
+                
+                // Calculate how far left or right of the hoop the ball was
+                const targetX = r.hoop.rimX + 30;
+                const closestX = r.cpuClosestX || b.pos.x;
+                const missX = targetX - closestX; // positive if undershot, negative if overshot
+                r.cpuLastShotOffset = missX;
+                
+                const missTexts = [
+                  missX > 0 ? "🤖 Shot too short - adding power!" : "🤖 Shot too long - reducing power!",
+                  "🤖 Recalibrating wind factor",
+                  "🤖 Targeting algorithm refined",
+                  "🤖 Calibrating trajectory..."
+                ];
                 r.floatingTexts.push({
                   pos: { x: b.pos.x < 0 || b.pos.x > WIDTH ? WIDTH / 2 : b.pos.x, y: 150 },
                   text: missTexts[Math.floor(Math.random() * missTexts.length)],
@@ -1049,6 +1339,9 @@ export default function BasketballCanvas({
                   velocityY: -1.2
                 });
               }
+              // Reset flight trackers
+              r.cpuClosestDistY = Infinity;
+              r.cpuClosestX = 0;
             }
 
             // Update turn if multiplayer or vs cpu
@@ -1070,8 +1363,13 @@ export default function BasketballCanvas({
               return next;
             });
 
+            let nextTurn: 1 | 2 = 1;
+            if (r.mode === GameMode.PASS_AND_PLAY || r.mode === GameMode.VS_CPU) {
+              nextTurn = r.scoreState.currentTurn === 1 ? 2 : 1;
+            }
+
             // Re-spawn Ball on launcher stand
-            b.pos = { x: BALL_START_X, y: BALL_START_Y };
+            b.pos = { x: getBallStartX(nextTurn), y: BALL_START_Y };
             b.vel = { x: 0, y: 0 };
             b.rotation = 0;
             b.angularVelocity = 0;
@@ -1081,20 +1379,15 @@ export default function BasketballCanvas({
             r.ballState = 'launcher';
 
             if (r.hummanEnabled) {
-              let nextTurn: 1 | 2 = 1;
-              if (r.mode === GameMode.PASS_AND_PLAY || r.mode === GameMode.VS_CPU) {
-                nextTurn = r.scoreState.currentTurn === 1 ? 2 : 1;
-              }
-              
               if (nextTurn === 1) {
-                r.ragdoll.joints = initRagdoll(BALL_START_X, BALL_START_Y);
+                r.ragdoll.joints = initRagdoll(getBallStartX(1), BALL_START_Y);
                 r.hummanAttached = true;
                 r.cpuRagdoll.joints = initCheeringRagdoll(60, 440);
                 r.cpuHummanAttached = false;
               } else {
                 r.ragdoll.joints = initCheeringRagdoll(60, 440);
                 r.hummanAttached = false;
-                r.cpuRagdoll.joints = initRagdoll(BALL_START_X, BALL_START_Y);
+                r.cpuRagdoll.joints = initRagdoll(getBallStartX(2), BALL_START_Y);
                 r.cpuHummanAttached = true;
               }
             }
@@ -1231,47 +1524,102 @@ export default function BasketballCanvas({
           if (r.cpuCooldown === 0) {
             // Trigger Aiming sequence
             r.ballState = 'drag';
-            r.dragStart = { x: BALL_START_X, y: BALL_START_Y };
+            r.dragStart = { x: getBallStartX(2), y: BALL_START_Y };
             
-            // Calculate perfect physics vector to basket
-            // Hoop target is at roughly x: 645, y: 185
-            const targetX = h.rimX + 30;
-            const targetY = h.rimY - 10;
-            const dx = targetX - BALL_START_X;
-            const dy = targetY - BALL_START_Y;
-            
-            // Standard ballistic trajectory approximation
-            // We want a high peak arc (basketball swish)
-            // Time to apex and time to target. We shoot for an apex height of y=60
-            const peakHeight = 80;
-            const apexY = Math.min(targetY, BALL_START_Y) - peakHeight;
-            
-            const g = 0.36; // Gravity constant per frame
-            
-            // Velocity up to apex:
-            const h1 = BALL_START_Y - apexY;
-            const vy0 = -Math.sqrt(2 * g * h1);
-            
-            // Time to reach target
-            const t1 = -vy0 / g; // time to peak
-            const h2 = targetY - apexY;
-            const t2 = Math.sqrt(2 * h2 / g); // time from peak to target
-            const totalFrames = t1 + t2;
-            
-            const vx0 = dx / totalFrames;
+            // Determine if the CPU is losing
+            const isCpuLosing = r.scoreState.player1.score > r.scoreState.player2.score;
 
-            // Add CPU Skill / Level variance error!
-            // Lower scores / levels have wider error distribution
-            const botLevel = r.scoreState.level;
-            const precisionFactor = r.cpuPrecision || 1.0;
-            const errorFactor = Math.max(0.04, (1.4 - botLevel * 0.25) / precisionFactor); // smaller error at higher levels and with higher learning precision
-            const errorX = (Math.random() - 0.5) * 1.5 * errorFactor;
-            const errorY = (Math.random() - 0.5) * 1.0 * errorFactor;
+            // Sometimes copy what the player did if losing and player has a successful shot
+            const shouldCopy = isCpuLosing && r.lastPlayerSuccessVel && Math.random() < 0.40; // 40% chance of copying!
 
-            r.cpuTargetVelocity = {
-              x: vx0 + errorX,
-              y: vy0 + errorY
-            };
+            if (shouldCopy && r.lastPlayerSuccessVel) {
+              const targetX = h.rimX + 30;
+              const distP1 = targetX - 140; // Player 1 starts at 140
+              const distP2 = targetX - 80;  // Player 2 starts at 80
+              const ratio = distP1 > 0 ? distP2 / distP1 : 1.12;
+
+              r.cpuTargetVelocity = {
+                x: r.lastPlayerSuccessVel.x * ratio,
+                y: r.lastPlayerSuccessVel.y
+              };
+
+              // Slightly adjust for organic feel
+              r.cpuTargetVelocity.x += (Math.random() - 0.5) * 0.1;
+              r.cpuTargetVelocity.y += (Math.random() - 0.5) * 0.1;
+
+              const copyTexts = [
+                "🤖 REPLICATING YOUR ARC SYSTEM! 📋",
+                "🤖 COPYING YOUR SHOOTING STATS! 🖨️",
+                "🤖 IMITATION MATRIX INITIATED!",
+                "🤖 COPY-PASTING YOUR WINNING TRAJECTORY! 💾"
+              ];
+              r.floatingTexts.push({
+                pos: { x: getBallStartX(2), y: 150 },
+                text: copyTexts[Math.floor(Math.random() * copyTexts.length)],
+                color: '#fb923c', // orange color
+                life: 2.0,
+                velocityY: -1.2
+              });
+            } else {
+              // Calculate perfect physics vector to basket
+              const targetX = h.rimX + 30;
+              const targetY = h.rimY - 10;
+              const dx = targetX - getBallStartX(2);
+              const dy = targetY - BALL_START_Y;
+              
+              const peakHeight = 80;
+              const apexY = Math.min(targetY, BALL_START_Y) - peakHeight;
+              
+              const g = 0.36; // Gravity constant per frame
+              
+              const h1 = BALL_START_Y - apexY;
+              const vy0 = -Math.sqrt(2 * g * h1);
+              
+              const t1 = -vy0 / g; // time to peak
+              const h2 = targetY - apexY;
+              const t2 = Math.sqrt(2 * h2 / g); // time from peak to target
+              const totalFrames = t1 + t2;
+              
+              const vx0 = dx / totalFrames;
+
+              // Lock-in / Tryhard mode when losing
+              let precisionFactor = r.cpuPrecision || 1.0;
+              let isLockedIn = false;
+              if (isCpuLosing) {
+                precisionFactor = Math.max(precisionFactor, 6.0); // Extreme boost to precision!
+                isLockedIn = true;
+              }
+
+              const botLevel = r.scoreState.level;
+              const errorFactor = Math.max(0.01, (1.4 - botLevel * 0.25) / precisionFactor); // tiny error if locked in
+              const errorX = (Math.random() - 0.5) * 1.5 * errorFactor;
+              const errorY = (Math.random() - 0.5) * 1.0 * errorFactor;
+
+              // Dynamic reinforcement feedback correction:
+              const feedbackCorrection = (r.cpuLastShotOffset || 0) * 0.022; // adjust X speed based on previous miss offset
+
+              r.cpuTargetVelocity = {
+                x: vx0 + errorX + feedbackCorrection,
+                y: vy0 + errorY
+              };
+
+              if (isLockedIn) {
+                const lockTexts = [
+                  "🤖 TIME TO LOCK IN. 🕶️",
+                  "🤖 ACTIVATING CHOP-SUEY TRYHARD PROTOCOL! 🔥",
+                  "🤖 TARGET ACQUIRED. AIMBOT.EXE ON! 🎯",
+                  "🤖 DEFICIT DETECTED. PREPARE FOR BUCKETS! ⚡"
+                ];
+                r.floatingTexts.push({
+                  pos: { x: getBallStartX(2), y: 150 },
+                  text: lockTexts[Math.floor(Math.random() * lockTexts.length)],
+                  color: '#f87171', // soft red
+                  life: 2.0,
+                  velocityY: -1.2
+                });
+              }
+            }
+
             r.cpuShootDelay = 50; // drag animation duration (approx 0.8 seconds)
           }
         } else if (r.cpuShootDelay > 0) {
@@ -1288,7 +1636,7 @@ export default function BasketballCanvas({
             const targetDragY = -r.cpuTargetVelocity.y / scaleForce;
 
             r.dragCurrent = {
-              x: BALL_START_X + targetDragX * r.cpuDragProgress,
+              x: getBallStartX(2) + targetDragX * r.cpuDragProgress,
               y: BALL_START_Y + targetDragY * r.cpuDragProgress
             };
 
@@ -1413,24 +1761,45 @@ export default function BasketballCanvas({
       // Key line
       ctx.strokeRect(550, courtY + 10, 220, HEIGHT - courtY - 20);
 
-      // Draw Launcher Stand / Pedestal
+      // Draw Launcher Stand / Pedestal 1: Player (at x = 140)
       ctx.fillStyle = '#334155';
       ctx.strokeStyle = '#475569';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(BALL_START_X - 18, courtY);
-      ctx.lineTo(BALL_START_X - 8, BALL_START_Y + 16);
-      ctx.lineTo(BALL_START_X + 8, BALL_START_Y + 16);
-      ctx.lineTo(BALL_START_X + 18, courtY);
+      ctx.moveTo(140 - 18, courtY);
+      ctx.lineTo(140 - 8, BALL_START_Y + 16);
+      ctx.lineTo(140 + 8, BALL_START_Y + 16);
+      ctx.lineTo(140 + 18, courtY);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Launch cup holder
+      // Launch cup holder 1
       ctx.fillStyle = '#1e293b';
       ctx.beginPath();
-      ctx.arc(BALL_START_X, BALL_START_Y + 16, 12, 0, Math.PI, true);
+      ctx.arc(140, BALL_START_Y + 16, 12, 0, Math.PI, true);
       ctx.fill();
+
+      // Draw Launcher Stand / Pedestal 2: Bot / Pass-and-Play Player 2 (at x = 80)
+      if (r.mode === GameMode.PASS_AND_PLAY || r.mode === GameMode.VS_CPU) {
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = '#334155';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(80 - 18, courtY);
+        ctx.lineTo(80 - 8, BALL_START_Y + 16);
+        ctx.lineTo(80 + 8, BALL_START_Y + 16);
+        ctx.lineTo(80 + 18, courtY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Launch cup holder 2
+        ctx.fillStyle = '#0f172a';
+        ctx.beginPath();
+        ctx.arc(80, BALL_START_Y + 16, 12, 0, Math.PI, true);
+        ctx.fill();
+      }
 
       // 3. DRAW SLINGSHOT TRAJECTORY PREVIEW (Only when dragging)
       if (r.ballState === 'drag') {
@@ -1732,8 +2101,9 @@ export default function BasketballCanvas({
             } else {
               // Glowing robot visor!
               const visGlow = 1 + 0.4 * Math.sin(Date.now() * 0.01);
-              ctx.strokeStyle = '#22d3ee'; // Neon Cyan visor
-              ctx.lineWidth = 3 * visGlow;
+              const isCpuLosing = r.mode === GameMode.VS_CPU && r.scoreState.player1.score > r.scoreState.player2.score;
+              ctx.strokeStyle = isCpuLosing ? '#ef4444' : '#22d3ee'; // Neon Red/Orange visor if losing, else Cyan!
+              ctx.lineWidth = (isCpuLosing ? 4 : 3) * visGlow;
               ctx.lineCap = 'round';
               ctx.beginPath();
               ctx.moveTo(head.x - 6, head.y - 2);
@@ -1748,7 +2118,7 @@ export default function BasketballCanvas({
               ctx.fill();
 
               // Cute binary mouth or speaker grill
-              ctx.strokeStyle = '#22d3ee';
+              ctx.strokeStyle = isCpuLosing ? '#ef4444' : '#22d3ee';
               ctx.lineWidth = 1;
               ctx.beginPath();
               ctx.moveTo(head.x - 4, head.y + 3);
@@ -1819,6 +2189,64 @@ export default function BasketballCanvas({
             }
           }
           ctx.restore();
+
+          // Draw equipped hat on top of head!
+          if (playerIndex === 1 && r.activeHat && r.activeHat !== 'none') {
+            ctx.save();
+            if (r.activeHat === 'crown') {
+              // Draw a gorgeous gold crown
+              ctx.fillStyle = '#fbbf24'; // beautiful golden
+              ctx.strokeStyle = '#d97706';
+              ctx.lineWidth = 1.5;
+              ctx.shadowColor = '#fbbf24';
+              ctx.shadowBlur = 8;
+              
+              ctx.beginPath();
+              // Crown base line above forehead
+              ctx.moveTo(head.x - 10, head.y - 5);
+              // Spikes of the crown
+              ctx.lineTo(head.x - 12, head.y - 15);
+              ctx.lineTo(head.x - 6, head.y - 10);
+              ctx.lineTo(head.x, head.y - 18); // center tall spike
+              ctx.lineTo(head.x + 6, head.y - 10);
+              ctx.lineTo(head.x + 12, head.y - 15);
+              ctx.lineTo(head.x + 10, head.y - 5);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+
+              // Gems!
+              ctx.fillStyle = '#ef4444'; // Red ruby center gem
+              ctx.beginPath();
+              ctx.arc(head.x, head.y - 10, 1.8, 0, Math.PI * 2);
+              ctx.fill();
+
+              ctx.fillStyle = '#3b82f6'; // Blue sapphire side gems
+              ctx.beginPath();
+              ctx.arc(head.x - 6, head.y - 7, 1.4, 0, Math.PI * 2);
+              ctx.arc(head.x + 6, head.y - 7, 1.4, 0, Math.PI * 2);
+              ctx.fill();
+            } else if (r.activeHat === 'cyberpunk_hat') {
+              // Cyberpunk visor / glowing neon headset
+              ctx.strokeStyle = '#a855f7'; // Purple neon
+              ctx.lineWidth = 2.5;
+              ctx.shadowColor = '#a855f7';
+              ctx.shadowBlur = 10;
+              
+              // Halo glowing band
+              ctx.beginPath();
+              ctx.ellipse(head.x, head.y - 4, 11, 4, -0.1, 0, Math.PI * 2);
+              ctx.stroke();
+
+              // Left/right neon ear cuffs
+              ctx.fillStyle = '#10b981'; // Green accent
+              ctx.beginPath();
+              ctx.arc(head.x - 9, head.y - 3, 2.5, 0, Math.PI * 2);
+              ctx.arc(head.x + 9, head.y - 3, 2.5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.restore();
+          }
 
           // Draw gloves (left and right hands: joint 0 and joint 1)
           const drawGlove = (jointIdx: number) => {
@@ -2016,12 +2444,17 @@ export default function BasketballCanvas({
       // 2. Normal Drag / Launcher grab
       // Prevent starting if ball is already launched or resetting
       if (r.ballState !== 'launcher') return;
+
+      // Also prevent starting if game has ended (someone scored 30 points)
+      const hasWinner = r.scoreState.player1.score >= 30 || r.scoreState.player2.score >= 30;
+      if (hasWinner) return;
       
       // Also prevent if it is the CPU's turn
       if (r.mode === GameMode.VS_CPU && r.scoreState.currentTurn === 2) return;
 
-      // In human mode, do not allow shooting if the human is unattached and crawling!
-      if (r.hummanEnabled && !r.hummanAttached) {
+      // In human mode, do not allow shooting if the active player's human is unattached and crawling!
+      const activeAttached = r.scoreState.currentTurn === 1 ? r.hummanAttached : r.cpuHummanAttached;
+      if (r.hummanEnabled && !activeAttached) {
         if (r.floatingTexts.filter(t => t.text === 'WAIT FOR RAGDOLL!').length === 0) {
           r.floatingTexts.push({
             pos: { x: b.pos.x, y: b.pos.y - 35 },
@@ -2113,6 +2546,10 @@ export default function BasketballCanvas({
 
       // Rotate initially in the direction of the throw
       b.angularVelocity = b.vel.x * 0.05;
+
+      if (r.scoreState.currentTurn === 1) {
+        r.lastPlayerShotVel = { x: b.vel.x, y: b.vel.y };
+      }
 
       // Change ball state to flight
       r.ballState = 'flight';
