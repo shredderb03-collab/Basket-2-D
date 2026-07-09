@@ -368,9 +368,9 @@ export default function BasketballCanvas({
           j.y += vy + 0.32;
         });
 
-        // Track if unattached ragdoll goes high up in the air
+        // Track if unattached ragdoll goes high up in the air (raised threshold to 150 to avoid KO on launcher drop)
         if (!isAttached) {
-          const isHigh = joints.some(j => j.y < 280);
+          const isHigh = joints.some(j => j.y < 150);
           if (isHigh) {
             if (playerIndex === 1) {
               r.hummanHighUp = true;
@@ -511,6 +511,7 @@ export default function BasketballCanvas({
               } else {
                 r.cpuHummanAttached = true;
               }
+              r.ballState = 'launcher'; // Allow shooting/dragging again!
               // Sparkles on connection!
               const connText = playerIndex === 1 ? 'READY TO SHOOT' : 'BOT READY';
               r.floatingTexts.push({
@@ -802,7 +803,7 @@ export default function BasketballCanvas({
             // Bounce! If hitting the ground, reverse the velocity
             // If it's a high impact, we'll give it a solid bounce!
             if (vy > 1.2) {
-              const bounceRestitution = vy > 3.5 ? 0.40 : 0.25;
+              const bounceRestitution = vy > 5.5 ? 0.48 : 0.25;
               j.prevY = j.y + vy * bounceRestitution;
               // Add a bit of horizontal bounce variance
               const vx = j.x - j.prevX;
@@ -822,8 +823,8 @@ export default function BasketballCanvas({
 
           const isHighUp = playerIndex === 1 ? r.hummanHighUp : r.cpuHummanHighUp;
 
-          // If high-velocity impact (> 3.0) and unattached, and was high up in the air, trigger the 3-second (180 frames) KO!
-          if (maxImpactVy > 3.0 && !isAttached && isHighUp) {
+          // If high-velocity impact (> 5.5) and unattached, and was high up in the air, trigger the 3-second (180 frames) KO!
+          if (maxImpactVy > 5.5 && !isAttached && isHighUp) {
             const currentCooldown = playerIndex === 1 ? r.hummanReattachCooldown : r.cpuHummanReattachCooldown;
             if (currentCooldown < 180) {
               if (playerIndex === 1) {
@@ -1267,14 +1268,37 @@ export default function BasketballCanvas({
         const isNearlyStill = Math.abs(b.vel.y) < 0.1 && Math.abs(b.vel.x) < 0.1 && Math.abs(b.pos.y - (440 - b.radius)) < 1.0;
 
         let shouldReset = false;
-        if (r.hummanEnabled && !r.hummanAttached && r.scoreState.currentTurn === 1) {
-          // In human mode, do not reset if unattached and on-screen: let ball stop on court so player crawls back
+        
+        const isActivePlayerHuman = r.scoreState.currentTurn === 1 || r.mode === GameMode.PASS_AND_PLAY;
+        const isActivePlayerUnattached = r.scoreState.currentTurn === 1 ? !r.hummanAttached : !r.cpuHummanAttached;
+
+        if (r.hummanEnabled && isActivePlayerHuman && isActivePlayerUnattached) {
+          // If a human player is currently active but unattached, we DO NOT reset the round or change turns.
+          // They must crawl back to the ball and reattach to it first!
           if (isNearlyStill) {
             b.vel.x = 0;
             b.vel.y = 0;
             r.ballState = 'launcher'; // make it ready so they can grab and shoot once attached
+          } else if (isOffScreen) {
+            // Bring ball back onto the court floor near the active player so they can grab it!
+            const joints = r.scoreState.currentTurn === 1 ? r.ragdoll.joints : r.cpuRagdoll.joints;
+            const chestX = joints.length > 2 ? joints[2].x : WIDTH / 2;
+            b.pos.x = Math.max(50, Math.min(WIDTH - 50, chestX + (chestX < WIDTH / 2 ? 85 : -85)));
+            b.pos.y = 440 - b.radius;
+            b.vel.x = 0;
+            b.vel.y = 0;
+            r.ballState = 'launcher';
+
+            // Show a tip
+            r.floatingTexts.push({
+              pos: { x: b.pos.x, y: b.pos.y - 30 },
+              text: "BALL RETRIEVED! CRAWL TO IT!",
+              color: r.scoreState.currentTurn === 1 ? '#ef4444' : '#a855f7',
+              life: 1.5,
+              velocityY: -1.0
+            });
           }
-          shouldReset = isOffScreen; // only reset if it rolls off the stage
+          shouldReset = false;
         } else {
           const isTimeLimitExceeded = r.shotTimer > 4500; // 4.5 seconds safety trigger
           shouldReset = isOffScreen || isNearlyStill || isTimeLimitExceeded;
@@ -1524,13 +1548,13 @@ export default function BasketballCanvas({
           if (r.cpuCooldown === 0) {
             // Trigger Aiming sequence
             r.ballState = 'drag';
-            r.dragStart = { x: getBallStartX(2), y: BALL_START_Y };
+            r.dragStart = { x: b.pos.x, y: b.pos.y };
             
             // Determine if the CPU is losing
             const isCpuLosing = r.scoreState.player1.score > r.scoreState.player2.score;
 
             // Sometimes copy what the player did if losing and player has a successful shot
-            const shouldCopy = isCpuLosing && r.lastPlayerSuccessVel && Math.random() < 0.40; // 40% chance of copying!
+            const shouldCopy = isCpuLosing && r.lastPlayerSuccessVel && Math.random() < 0.30; // 30% chance of copying!
 
             if (shouldCopy && r.lastPlayerSuccessVel) {
               const targetX = h.rimX + 30;
@@ -1554,70 +1578,138 @@ export default function BasketballCanvas({
                 "🤖 COPY-PASTING YOUR WINNING TRAJECTORY! 💾"
               ];
               r.floatingTexts.push({
-                pos: { x: getBallStartX(2), y: 150 },
+                pos: { x: b.pos.x, y: b.pos.y - 35 },
                 text: copyTexts[Math.floor(Math.random() * copyTexts.length)],
                 color: '#fb923c', // orange color
                 life: 2.0,
                 velocityY: -1.2
               });
             } else {
-              // Calculate perfect physics vector to basket
-              const targetX = h.rimX + 30;
-              const targetY = h.rimY - 10;
-              const dx = targetX - getBallStartX(2);
-              const dy = targetY - BALL_START_Y;
+              // Calculate perfect physics vector to basket using multi-step simulation
+              const startX = b.pos.x;
+              const startY = b.pos.y;
               
-              const peakHeight = 80;
-              const apexY = Math.min(targetY, BALL_START_Y) - peakHeight;
+              // 1. PREDICT FUTURE HOOP POSITION IF IT'S MOVING (In practice / future modes)
+              let predictedRimX = h.rimX;
+              let predictedRimY = h.rimY;
+              
+              const lvl = r.scoreState.level;
+              const speedY = Math.min(1.5, 0.4 + lvl * 0.2);
+              const speedX = Math.min(1.2, 0.3 + lvl * 0.15);
+              
+              // Base flight time estimate: roughly 75 frames for standard peak height
+              const estFrames = 75;
+              
+              if (r.mode === GameMode.PRACTICE && lvl >= 2) {
+                let tempRimX = h.rimX;
+                let tempRimY = h.rimY;
+                let tempDirX = r.hoopDirectionX;
+                let tempDirY = r.hoopDirectionY;
+                
+                for (let f = 0; f < estFrames; f++) {
+                  if (lvl >= 2) {
+                    tempRimY += tempDirY * speedY;
+                    if (tempRimY > 250) tempDirY = -1;
+                    if (tempRimY < 120) tempDirY = 1;
+                  }
+                  if (lvl >= 3) {
+                    tempRimX += tempDirX * speedX;
+                    if (tempRimX < 540) tempDirX = 1;
+                    if (tempRimX > 680) tempDirX = -1;
+                  }
+                }
+                predictedRimX = tempRimX;
+                predictedRimY = tempRimY;
+              }
+              
+              const targetX = predictedRimX + 30;
+              const targetY = predictedRimY - 10;
+              const dx = targetX - startX;
+              
+              // Define desired peak arc (make it elegant and high)
+              const peakHeight = Math.max(100, Math.min(180, 50 + Math.abs(dx) * 0.22));
+              const apexY = Math.min(targetY, startY) - peakHeight;
               
               const g = 0.36; // Gravity constant per frame
+              const gamma = 0.993; // Air friction constant per frame
               
-              const h1 = BALL_START_Y - apexY;
-              const vy0 = -Math.sqrt(2 * g * h1);
+              // Initial analytical guess (neglecting air resistance)
+              const h1 = startY - apexY;
+              let vy0 = -Math.sqrt(2 * g * h1);
               
               const t1 = -vy0 / g; // time to peak
               const h2 = targetY - apexY;
               const t2 = Math.sqrt(2 * h2 / g); // time from peak to target
               const totalFrames = t1 + t2;
               
-              const vx0 = dx / totalFrames;
-
-              // Lock-in / Tryhard mode when losing
-              let precisionFactor = r.cpuPrecision || 1.0;
-              let isLockedIn = false;
-              if (isCpuLosing) {
-                precisionFactor = Math.max(precisionFactor, 6.0); // Extreme boost to precision!
-                isLockedIn = true;
+              let vx0 = dx / totalFrames;
+              
+              // 2. RUN MULTI-STEP SHOOTING SIMULATION (ACCOUNTS FOR AIR DRAG & WIND COMPONENT!)
+              for (let step = 0; step < 8; step++) {
+                let simX = startX;
+                let simY = startY;
+                let simVx = vx0;
+                let simVy = vy0;
+                
+                let closestDistY = Infinity;
+                let closestXAtTargetY = simX;
+                
+                for (let f = 0; f < 300; f++) {
+                  simVy += g;
+                  simVx += r.windForce;
+                  
+                  simVx *= gamma;
+                  simVy *= gamma;
+                  
+                  simX += simVx;
+                  simY += simVy;
+                  
+                  const distY = Math.abs(simY - targetY);
+                  if (distY < closestDistY) {
+                    closestDistY = distY;
+                    closestXAtTargetY = simX;
+                  }
+                  
+                  if (simVy > 0 && simY >= targetY) {
+                    break;
+                  }
+                }
+                
+                const errX = targetX - closestXAtTargetY;
+                vx0 += errX * 0.014; // adjust horizontal initial speed to cancel error
               }
 
-              const botLevel = r.scoreState.level;
-              const errorFactor = Math.max(0.01, (1.4 - botLevel * 0.25) / precisionFactor); // tiny error if locked in
-              const errorX = (Math.random() - 0.5) * 1.5 * errorFactor;
-              const errorY = (Math.random() - 0.5) * 1.0 * errorFactor;
+              // Apply a tiny error factor for human authenticity, but keep it incredibly high precision!
+              // Base precision factor is 45.0 (guarantees swishes)
+              let precisionFactor = 45.0; 
+
+              const errorFactor = Math.max(0.002, (1.4 - lvl * 0.25) / precisionFactor);
+              const errorX = (Math.random() - 0.5) * 0.6 * errorFactor;
+              const errorY = (Math.random() - 0.5) * 0.4 * errorFactor;
 
               // Dynamic reinforcement feedback correction:
-              const feedbackCorrection = (r.cpuLastShotOffset || 0) * 0.022; // adjust X speed based on previous miss offset
+              const feedbackCorrection = (r.cpuLastShotOffset || 0) * 0.022; // adjust based on previous misses
 
               r.cpuTargetVelocity = {
                 x: vx0 + errorX + feedbackCorrection,
                 y: vy0 + errorY
               };
 
-              if (isLockedIn) {
-                const lockTexts = [
-                  "🤖 TIME TO LOCK IN. 🕶️",
-                  "🤖 ACTIVATING CHOP-SUEY TRYHARD PROTOCOL! 🔥",
-                  "🤖 TARGET ACQUIRED. AIMBOT.EXE ON! 🎯",
-                  "🤖 DEFICIT DETECTED. PREPARE FOR BUCKETS! ⚡"
-                ];
-                r.floatingTexts.push({
-                  pos: { x: getBallStartX(2), y: 150 },
-                  text: lockTexts[Math.floor(Math.random() * lockTexts.length)],
-                  color: '#f87171', // soft red
-                  life: 2.0,
-                  velocityY: -1.2
-                });
-              }
+              const smartTexts = [
+                "🤖 QUANTUM BALLISTICS RECALIBRATED! 🌌",
+                "🤖 PREDICTIVE AI VECTOR LOCKED! 🎯",
+                "🤖 SOLVING PARABOLAS WITH DRAG COMP! ⚡",
+                "🤖 WIND CORRECTION COEFFICIENT INJECTED! 🌀",
+                "🤖 AIMBOT PROTOCOL V3.5 ENGAGED! 🔥",
+                "🤖 NO BASKET ESCAPES MY COMPILER! 💻"
+              ];
+              r.floatingTexts.push({
+                pos: { x: startX, y: startY - 40 },
+                text: smartTexts[Math.floor(Math.random() * smartTexts.length)],
+                color: '#60a5fa', // soft blue/neon
+                life: 2.2,
+                velocityY: -1.3
+              });
             }
 
             r.cpuShootDelay = 50; // drag animation duration (approx 0.8 seconds)
@@ -1636,8 +1728,8 @@ export default function BasketballCanvas({
             const targetDragY = -r.cpuTargetVelocity.y / scaleForce;
 
             r.dragCurrent = {
-              x: getBallStartX(2) + targetDragX * r.cpuDragProgress,
-              y: BALL_START_Y + targetDragY * r.cpuDragProgress
+              x: r.dragStart.x + targetDragX * r.cpuDragProgress,
+              y: r.dragStart.y + targetDragY * r.cpuDragProgress
             };
 
             // Move ball along with the drag visually
