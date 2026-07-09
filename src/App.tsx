@@ -11,6 +11,7 @@ import {
   GameScoreState 
 } from './types';
 import { gameAudio } from './lib/audio';
+import { safeStorage } from './lib/storage';
 import SettingsHeader from './components/SettingsHeader';
 import BasketballCanvas from './components/BasketballCanvas';
 import ShopModal from './components/ShopModal';
@@ -44,8 +45,12 @@ export default function App() {
   });
   const [hummanEnabled, setHummanEnabled] = useState<boolean>(true);
   const [shotBlockingEnabled, setShotBlockingEnabled] = useState<boolean>(() => {
-    const saved = localStorage.getItem('ragdoll_basketball_shot_blocking');
-    return saved ? saved === 'true' : true;
+    try {
+      const saved = safeStorage.getItem('ragdoll_basketball_shot_blocking');
+      return saved ? saved === 'true' : true;
+    } catch (e) {
+      return true;
+    }
   });
   const [ballRadius, setBallRadius] = useState<number>(18);
   const [isShopOpen, setIsShopOpen] = useState<boolean>(false);
@@ -54,35 +59,75 @@ export default function App() {
   
   // --- Shop & Economy System ---
   const [money, setMoney] = useState<number>(() => {
-    const saved = localStorage.getItem('ragdoll_basketball_money');
-    return saved ? parseInt(saved, 10) : 100; // start with $100 so they can buy something!
+    try {
+      const saved = safeStorage.getItem('ragdoll_basketball_money');
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        return isNaN(parsed) ? 100 : parsed;
+      }
+    } catch (e) {
+      console.error('Error reading money from safeStorage', e);
+    }
+    return 100; // start with $100 so they can buy something!
   });
 
   const [unlockedItems, setUnlockedItems] = useState<string[]>(() => {
-    const saved = localStorage.getItem('ragdoll_basketball_unlocked');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = safeStorage.getItem('ragdoll_basketball_unlocked');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.error('Error reading unlockedItems from safeStorage', e);
+    }
+    return [];
   });
 
   const [activeTrail, setActiveTrail] = useState<string>(() => {
-    return localStorage.getItem('ragdoll_basketball_trail') || 'default';
+    try {
+      return safeStorage.getItem('ragdoll_basketball_trail') || 'default';
+    } catch (e) {
+      return 'default';
+    }
   });
 
   const [activeHat, setActiveHat] = useState<string>(() => {
-    return localStorage.getItem('ragdoll_basketball_hat') || 'none';
+    try {
+      return safeStorage.getItem('ragdoll_basketball_hat') || 'none';
+    } catch (e) {
+      return 'none';
+    }
   });
 
   const [activeWeight, setActiveWeight] = useState<string>(() => {
-    return localStorage.getItem('ragdoll_basketball_weight') || 'normal';
+    try {
+      return safeStorage.getItem('ragdoll_basketball_weight') || 'normal';
+    } catch (e) {
+      return 'normal';
+    }
   });
 
   const [activeBounce, setActiveBounce] = useState<string>(() => {
-    return localStorage.getItem('ragdoll_basketball_bounce') || 'normal';
+    try {
+      return safeStorage.getItem('ragdoll_basketball_bounce') || 'normal';
+    } catch (e) {
+      return 'normal';
+    }
   });
 
   const [restockTime, setRestockTime] = useState<number>(120);
   const [shopStock, setShopStock] = useState<Record<string, number>>(() => {
-    const saved = localStorage.getItem('ragdoll_basketball_shop_stock');
-    return saved ? JSON.parse(saved) : {
+    try {
+      const saved = safeStorage.getItem('ragdoll_basketball_shop_stock');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (e) {
+      console.error('Error reading shopStock from safeStorage', e);
+    }
+    return {
       gold_trail: 1,
       featherweight: 2,
       super_bouncy: 1,
@@ -93,31 +138,45 @@ export default function App() {
 
   // Automatically save progress whenever money or unlocked items update!
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_money', money.toString());
+    try {
+      safeStorage.setItem('ragdoll_basketball_money', money.toString());
+    } catch (e) {}
   }, [money]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_shot_blocking', shotBlockingEnabled.toString());
+    try {
+      safeStorage.setItem('ragdoll_basketball_shot_blocking', shotBlockingEnabled.toString());
+    } catch (e) {}
   }, [shotBlockingEnabled]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
+    try {
+      safeStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
+    } catch (e) {}
   }, [unlockedItems]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_trail', activeTrail);
+    try {
+      safeStorage.setItem('ragdoll_basketball_trail', activeTrail);
+    } catch (e) {}
   }, [activeTrail]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_hat', activeHat);
+    try {
+      safeStorage.setItem('ragdoll_basketball_hat', activeHat);
+    } catch (e) {}
   }, [activeHat]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_weight', activeWeight);
+    try {
+      safeStorage.setItem('ragdoll_basketball_weight', activeWeight);
+    } catch (e) {}
   }, [activeWeight]);
 
   useEffect(() => {
-    localStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+    try {
+      safeStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+    } catch (e) {}
   }, [activeBounce]);
 
   // Reset game scores when switching modes
@@ -163,7 +222,9 @@ export default function App() {
             crown: Math.floor(Math.random() * 2)
           };
           setShopStock(newStock);
-          localStorage.setItem('ragdoll_basketball_shop_stock', JSON.stringify(newStock));
+          try {
+            safeStorage.setItem('ragdoll_basketball_shop_stock', JSON.stringify(newStock));
+          } catch (e) {}
           return 120;
         }
         return prev - 1;

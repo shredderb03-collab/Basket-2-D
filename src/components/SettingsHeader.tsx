@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { GameMode, AudioSettings, GameScoreState } from '../types';
 import { gameAudio } from '../lib/audio';
+import { safeStorage } from '../lib/storage';
 
 interface SettingsHeaderProps {
   mode: GameMode;
@@ -96,12 +97,16 @@ export default function SettingsHeader({
   const [isSaveFlash, setIsSaveFlash] = useState(false);
 
   const handleManualSave = () => {
-    localStorage.setItem('ragdoll_basketball_money', money.toString());
-    localStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
-    localStorage.setItem('ragdoll_basketball_trail', activeTrail);
-    localStorage.setItem('ragdoll_basketball_hat', activeHat);
-    localStorage.setItem('ragdoll_basketball_weight', activeWeight);
-    localStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+    try {
+      safeStorage.setItem('ragdoll_basketball_money', money.toString());
+      safeStorage.setItem('ragdoll_basketball_unlocked', JSON.stringify(unlockedItems));
+      safeStorage.setItem('ragdoll_basketball_trail', activeTrail);
+      safeStorage.setItem('ragdoll_basketball_hat', activeHat);
+      safeStorage.setItem('ragdoll_basketball_weight', activeWeight);
+      safeStorage.setItem('ragdoll_basketball_bounce', activeBounce);
+    } catch (e) {
+      console.error('Failed to save state to safeStorage:', e);
+    }
     
     try { gameAudio.playChimeSound(); } catch (e) {}
 
